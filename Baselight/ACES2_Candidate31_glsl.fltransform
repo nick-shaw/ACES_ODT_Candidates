@@ -1,0 +1,1543 @@
+Name = "ACES 2.0 Candidate 31 glsl";
+Type = "function";
+InSpace = "ACES_lin";
+OutSpace = "ACES_lin";
+
+GenericForward = upto("@@");
+
+// --------------------------------------------------
+
+// Test Rendering Transform
+
+const mat3 MATRIX_16 = mat3(
+     0.56193142,  0.40797761,  0.03009097,
+    -0.21886684,  1.06384814,  0.15501869,
+     0.08892922, -0.32123412,  1.2323049 
+);
+
+const mat3 MATRIX_INVERSE_16 = mat3(
+     1.54705503, -0.58256219,  0.03550715,
+     0.32230313,  0.78421833, -0.10652146,
+    -0.02762598,  0.24646862,  0.78115737
+);
+
+// Input matrix
+const mat3 AP0_ACES_to_XYZ_matrix = mat3(
+     0.9525523959,  0.0000000000,  0.0000936786,
+     0.3439664498,  0.7281660966, -0.0721325464,
+     0.0000000000,  0.0000000000,  1.0088251844
+);
+
+const mat3 XYZ_to_AP0_ACES_matrix = mat3(
+     1.0498110175,  0.0000000000, -0.0000974845,
+    -0.4959030231,  1.3733130458,  0.0982400361,
+     0.0000000000,  0.0000000000,  0.9912520182
+);
+
+const mat3 INV_FL_NORMALIZE = mat3(
+    1.002304, 0.000000,  0.000008,
+    -0.001088, 1.000000, -0.007302,
+    0.000000, 0.000000,  0.926328);
+
+// Matrix for Hellwig inverse
+const mat3 panlrcm = mat3(
+     460.0,  451.0,  288.0,
+     460.0, -891.0, -261.0,
+     460.0, -220.0, -6300.0
+);
+
+const float mmScaleFactor = 100.0; 
+const float daniele_n_r = 100.0;    // Normalized white in nits (what 1.0 should be)
+const float daniele_g = 1.15;      // surround / contrast
+const float daniele_c = 0.18;      // scene-referred grey
+const float daniele_c_d = 10.013;    // display-referred grey (in nits)
+const float daniele_w_g = 0.14;    // grey change between different peak luminance
+const float daniele_t_1 = 0.04;     // shadow toe, flare/glare compensation - how ever you want to call it
+const float daniele_r_hit_min = 128.0;  // Scene-referred value "hitting the roof" at 100 nits
+const float daniele_r_hit_max = 896.0;  // Scene-referred value "hitting the roof" at 10,000 nits
+
+const float float_epsilon = 0.0000000596046448;
+const float HALF_MAXIMUM = 65504.0;
+
+const float PI = 3.141592653589793;
+
+const float L_A = 100.0;
+
+const float Y_b = 20.0;
+
+const float referenceLuminance = 100.0;
+
+const vec3 surround = vec3(0.9, 0.59, 0.9);
+
+const vec3 d65White = vec3(95.0455927052, 100.0, 108.9057750760);
+
+// Chroma compress parameters
+const float hoff = 0.835;
+const float hmul = 14.0;
+const vec2 a = vec2(-0.18, -0.42);
+const vec2 b = vec2(0.135, 0.13);
+const vec2 c = vec2(-0.08, 0.0);
+const float chromaCompress = 1.0;
+const vec2 chromaCompressParams = vec2(2.1, 0.85);
+const vec3 shadowCompressParams = vec3(0.54, max(0.121, 0.132 - 0.00002 * daniele_n), 0.545);
+const float shadow_boost = max(1.08, 1.21 - 0.00015 * daniele_n);
+const float sat = 1.2;
+
+const float gamut_gamma = 0.879464;
+
+// Gamut Compression parameters
+const float cuspMidBlend = 0.8;
+const float smoothCusps = 0.0;
+const float midJ = 34.08; // ~10 nits in Hellwig J
+const float focusDistance = 2.0;
+const vec4 compressionFuncParams = vec4(0.75, 1.2, 1.45, 1.0);
+
+float log10(in float x)
+{ 
+    return log(x)/log(10.0);
+}
+
+float tanh(float x)
+{
+    float f = exp(2.0 * x);
+    return (f - 1.0) / (f + 1.0);
+}
+
+float spow( float base, float exponent )
+{
+    if(base < 0.0 && exponent != floor(exponent) )
+    {
+         return 0.0;
+    }
+    else
+    {
+        return pow(base, exponent); 
+    }
+}
+
+vec3 vec3spow( vec3 base, float exponent )
+{
+    return vec3(spow(base.x, exponent), spow(base.y, exponent), spow(base.z, exponent));
+}
+
+vec3 vec3sign( vec3 v )
+{
+    return vec3(sign(v.x), sign(v.y), sign(v.z));
+}
+
+vec3 vec3abs( vec3 a )
+{
+    return vec3(abs(a.x), abs(a.y), abs(a.z));
+}
+
+// "safe" div
+float sdiv( float a, float b )
+{
+    if(b == 0.0)
+    {
+        return 0.0;
+    }
+    else
+    {
+        return a / b;
+    }
+}
+
+// linear interpolation between two values a & b with the bias t
+float lerp(float a, float b, float t)
+{
+    return a + t * (b - a);
+}
+
+// convert radians to degrees
+float radians_to_degrees( float radians )
+{
+    return radians * 180.0 / PI;
+}
+
+
+// convert degrees to radians
+float degrees_to_radians( float degrees )
+{
+    return degrees / 180.0 * PI;
+}
+
+float mod(float a, float N)
+{
+    return a - N * floor(a / N);
+}
+
+vec3 compress(vec3 xyz)
+{
+    float x = xyz.x;
+    float y = xyz.y;
+    float z = xyz.z;
+   
+    float C = (x + y + z) / 3.0;
+    if (C < 0.000001)
+        return xyz;
+
+    float R = sqrt((x-C)*(x-C) + (y-C)*(y-C) + (z-C)*(z-C));
+    R = R * 0.816496580927726; // np.sqrt(2/3)
+    
+//     if (R > 0.0001)
+    if (R > float_epsilon)
+    {
+      x = (x - C) / R;
+      y = (y - C) / R;
+      z = (z - C) / R;
+    }
+    else
+    {
+      return xyz;
+    }
+      
+    float r = R / C;
+    float s = -min(x, min(y, z));
+    
+    float t = 0.0;
+    if (r > 0.000001)
+    {
+      t = (0.5 + sqrt(((s - 0.5)*(s - 0.5) + pow((sqrt(4.0 / (r*r) + 1.0) - 1.0), 2.0) / 4.0)));
+      if (t < 0.000001)
+        return xyz;
+      t = 1.0 / t;
+    }
+
+    x = C * x * t + C;
+    y = C * y * t + C;
+    z = C * z * t + C;
+
+    return vec3(x, y, z);
+}
+
+vec3 uncompress(vec3 xyz)
+{
+    float x = xyz.x;
+    float y = xyz.y;
+    float z = xyz.z;
+
+    float C = (x+y+z)*(1.0 / 3.0) ;
+    if (C < 0.000001)
+         return xyz;
+
+    float R = sqrt(pow(abs(x-C), 2.0) + pow(abs(y-C), 2.0) + pow(abs(z-C), 2.0));
+    R = R * 0.816496580927726; // np.sqrt(2/3)
+
+    if (R > float_epsilon)
+    {
+        x = (x - C) / R;
+        y = (y - C) / R;
+        z = (z - C) / R;
+    }
+    else
+    {
+      return xyz;
+    }
+
+    float t = R / C;
+    float s = -min(x, min(y, z));
+    
+    float r = 0.0;
+    if (t  > 0.000001)
+    {
+         r = sqrt(pow((2.0 * sqrt(pow((1.0 / t - 0.5),2.0) - pow((s - 0.5), 2.0)) + 1.0), 2.0) - 1.0);
+         if (r < 0.000001)
+            return xyz;
+         r = 2.0 / r;
+    }
+
+    x = C * x * r + C;
+    y = C * y * r + C;
+    z = C * z * r + C;
+    
+    return vec3(x, y, z);
+}
+
+// "PowerP" compression function (also used in the ACES Reference Gamut Compression)
+// values of v above  'threshold' are compressed by a 'power' function
+// so that an input value of 'limit' results in an output of 1.0
+float compressPowerP( float v, float threshold, float limit, float power, bool inverse )
+{
+    float s = (limit-threshold)/pow(pow((1.0-threshold)/(limit-threshold),-power)-1.0,1.0/power);
+
+    float vCompressed;
+
+    if( inverse )
+    {
+        vCompressed = (v<threshold||limit<1.0001||v>threshold+s)?v:threshold+s*pow(-(pow((v-threshold)/s,power)/(pow((v-threshold)/s,power)-1.0)),1.0/power);
+    }
+    else
+    {
+        vCompressed = (v<threshold||limit<1.0001)?v:threshold+s*((v-threshold)/s)/(pow(1.0+pow((v-threshold)/s,power),1.0/power));
+    }
+
+    return vCompressed;
+}
+
+vec3 post_adaptation_non_linear_response_compression_forward(vec3 RGB, float F_L)
+{
+    vec3 F_L_RGB = vec3spow(F_L * vec3abs(RGB) / 100.0, 0.42);
+    vec3 RGB_c;
+    RGB_c.x = (400.0 * sign(RGB.x) * F_L_RGB.x) / (27.13 + F_L_RGB.x) + 0.1;
+    RGB_c.y = (400.0 * sign(RGB.y) * F_L_RGB.y) / (27.13 + F_L_RGB.y) + 0.1;
+    RGB_c.z = (400.0 * sign(RGB.z) * F_L_RGB.z) / (27.13 + F_L_RGB.z) + 0.1;
+
+    return RGB_c;
+}
+
+vec3 post_adaptation_non_linear_response_compression_inverse(vec3 RGB, float F_L)
+{
+    vec3 RGB_p =  (vec3sign(RGB - 0.1) * 100.0 / F_L * vec3spow((27.13 * vec3abs(RGB - 0.1)) / (400.0 - vec3abs(RGB - 0.1)), 1.0 / 0.42) );
+
+    return RGB_p;
+}
+
+vec3 XYZ_to_Hellwig2022_JMh( vec3 XYZ, vec3 XYZ_w)
+{
+    float Y_w = XYZ_w.y ;
+
+    // # Step 0
+    // # Converting *CIE XYZ* tristimulus values to sharpened *RGB* values.
+    vec3 RGB_w = XYZ_w * MATRIX_16;
+
+    // Ignore degree of adaptation.
+    // If we always do this, some of the subsequent code can be simplified
+    float D = 1.0;
+
+    // # Viewing conditions dependent parameters
+    float k = 1.0 / (5.0 * L_A + 1.0);
+    float k4 = pow(k,4);
+    float F_L = 0.2 * k4 * (5.0 * L_A) + 0.1 * pow((1.0 - k4), 2.0) * spow(5.0 * L_A, 1.0 / 3.0) ;
+    float n = sdiv(Y_b, Y_w);
+    float z = 1.48 + sqrt(n);
+
+    vec3 D_RGB = D * Y_w / RGB_w + 1.0 - D;
+    vec3 RGB_wc = D_RGB * RGB_w;
+
+    // # Applying forward post-adaptation non-linear response compression.
+    vec3 F_L_RGB = vec3spow(F_L * vec3abs(RGB_wc) / 100.0, 0.42);
+
+    // # Computing achromatic responses for the whitepoint.
+    vec3 RGB_aw = (400.0 * vec3sign(RGB_wc) * F_L_RGB) / (27.13 + F_L_RGB) + 0.1;
+
+    // # Computing achromatic responses for the whitepoint.
+    float R_aw = RGB_aw.x ;
+    float G_aw = RGB_aw.y ;
+    float B_aw = RGB_aw.z ;
+    float A_w = 2.0 * R_aw + G_aw + 0.05 * B_aw - 0.305;
+
+    // # Step 1
+    // # Converting *CIE XYZ* tristimulus values to sharpened *RGB* values.
+
+    vec3 RGB = XYZ * MATRIX_16;
+
+    // # Step 2
+    vec3 RGB_c = D_RGB * RGB;
+
+    // # Step 3
+    // Always compressMode
+    RGB_c = compress(RGB_c);
+
+    vec3 RGB_a = post_adaptation_non_linear_response_compression_forward(RGB_c, F_L);
+
+    RGB_a = uncompress(RGB_a);
+
+    // # Step 4
+    // # Converting to preliminary cartesian coordinates.
+    float R_a = RGB_a.x ;
+    float G_a = RGB_a.y ;
+    float B_a = RGB_a.z ;
+    float a = R_a - 12.0 * G_a / 11.0 + B_a / 11.0;
+    float b = (R_a + G_a - 2.0 * B_a) / 9.0;
+
+    // # Computing the *hue* angle :math:`h`.
+    // Unclear why this isnt matching the python version.
+    float h = mod(radians_to_degrees(atan(b, a)), 360.0);
+
+    // # Step 6
+    // # Computing achromatic responses for the stimulus.
+    float R_a2 = RGB_a.x ;
+    float G_a2 = RGB_a.y ;
+    float B_a2 = RGB_a.z ;
+    float A = 2.0 * R_a2 + G_a2 + 0.05 * B_a2 - 0.305;
+
+    // # Step 7
+    // # Computing the correlate of *Lightness* :math:`J`.
+    // with sdiv_mode():
+    float J = 100.0 * spow(sdiv(A, A_w), surround.y * z);
+
+    // # Step 9
+    // # Computing the correlate of *colourfulness* :math:`M`.
+    float M = 43.0 * surround.z * sqrt(a * a + b * b);
+
+    // No *Helmholtz–Kohlrausch* Effect Extension.
+
+    if (J == 0.0)
+    {
+        M = 0.0;
+    }
+      return vec3(J, M, h);
+}
+
+vec3 Hellwig2022_JMh_to_XYZ( vec3 JMh, vec3 XYZ_w)
+{
+    float J = JMh.x;
+    float M = JMh.y;
+    float h = JMh.z;
+
+    float Y_w = XYZ_w.y;
+
+    // # Step 0
+    // # Converting *CIE XYZ* tristimulus values to sharpened *RGB* values.
+    vec3 RGB_w = XYZ_w * MATRIX_16;
+
+    // Ignore degree of adaptation.
+    // If we always do this, some of the subsequent code can be simplified
+    float D = 1.0;
+
+    // # Viewing conditions dependent parameters
+    float k = 1.0 / (5.0 * L_A + 1.0);
+    float k4 = pow(k, 4.0);
+    float F_L = 0.2 * k4 * (5.0 * L_A) + 0.1 * pow((1.0 - k4), 2.0) * spow(5.0 * L_A, 1.0 / 3.0) ;
+    float n = sdiv(Y_b, Y_w);
+    float z = 1.48 + sqrt(n);
+
+    vec3 D_RGB = D * Y_w / RGB_w + 1.0 - D;
+    vec3 RGB_wc = D_RGB * RGB_w;
+
+    // # Applying forward post-adaptation non-linear response compression.
+    vec3 F_L_RGB = vec3spow(F_L * vec3abs(RGB_wc) / 100.0, 0.42);
+
+    // # Computing achromatic responses for the whitepoint.
+    vec3 RGB_aw = (400.0 * vec3sign(RGB_wc) * F_L_RGB) / (27.13 + F_L_RGB) + 0.1;
+
+    // # Computing achromatic responses for the whitepoint.
+    float R_aw = RGB_aw.x ;
+    float G_aw = RGB_aw.y ;
+    float B_aw = RGB_aw.z ;
+    float A_w = 2.0 * R_aw + G_aw + 0.05 * B_aw - 0.305;
+
+    float hr = degrees_to_radians(h);
+
+    // No *Helmholtz–Kohlrausch* Effect.
+
+    // # Computing achromatic response :math:`A` for the stimulus.
+    float A = A_w * spow(J / 100.0, 1.0 / (surround.y * z));
+
+    // # Computing *P_p_1* to *P_p_2*.
+    float P_p_1 = 43.0 * surround.z;
+    float P_p_2 = A;
+
+
+    // # Step 3
+    // # Computing opponent colour dimensions :math:`a` and :math:`b`.
+    // with sdiv_mode():
+    float gamma = M / P_p_1;
+
+    float a = gamma * cos(hr);
+    float b = gamma * sin(hr);
+
+
+    // # Step 4
+    // # Applying post-adaptation non-linear response compression matrix.
+
+    vec3 RGB_a = (vec3(P_p_2, a, b) * panlrcm) / 1403.0;
+
+    // # Step 5
+    // # Applying inverse post-adaptation non-linear response compression.
+
+    // Always compressMode
+    RGB_a = compress(RGB_a);
+
+    vec3 RGB_c = post_adaptation_non_linear_response_compression_inverse(RGB_a + 0.1, F_L);
+
+    RGB_c = uncompress(RGB_c);
+
+    // # Step 6
+    vec3 RGB = RGB_c / D_RGB;
+    
+
+    // # Step 7
+    vec3 XYZ = RGB * MATRIX_INVERSE_16;
+
+    return XYZ;
+}
+
+float daniele_evo_fwd(float Y)
+{
+    const float daniele_r_hit = daniele_r_hit_min + (daniele_r_hit_max - daniele_r_hit_min) * (log(daniele_n / daniele_n_r) / log(10000.0 / 100.0));
+    const float daniele_m_0 = daniele_n / daniele_n_r;
+    const float daniele_m_1 = 0.5 * (daniele_m_0 + sqrt(daniele_m_0 * (daniele_m_0 + 4.0 * daniele_t_1)));
+    const float daniele_u = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + 1.0), daniele_g);
+    const float daniele_m = daniele_m_1 / daniele_u;
+    const float daniele_w_i = log(daniele_n / 100.0) / log(2.0);
+    const float daniele_c_t = daniele_c_d * (1.0 + daniele_w_i * daniele_w_g) / daniele_n_r;
+    const float daniele_g_ip = 0.5 * (daniele_c_t + sqrt(daniele_c_t * (daniele_c_t + 4.0 * daniele_t_1)));
+    const float daniele_g_ipp2 = -daniele_m_1 * pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) / (pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) - 1.0);
+    const float daniele_w_2 = daniele_c / daniele_g_ipp2;
+    const float daniele_s_2 = daniele_w_2 * daniele_m_1;
+    const float daniele_u_2 = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + daniele_w_2), daniele_g);
+    const float daniele_m_2 = daniele_m_1 / daniele_u_2;
+
+    float f = daniele_m_2 * pow(max(0.0, Y) / (Y + daniele_s_2), daniele_g);
+    float h = max(0.0, f * f / (f + daniele_t_1));
+
+    return h;
+}
+
+float ptanh(float x, float p, float t, float pt)
+{
+    return x <= 10.0 ? pow(tanh(pow(x, p) / t), 1.0 / pt) : 1.0;
+}
+
+// convert linear RGB values with the limiting primaries to Hellwig J (lightness), M (colorfulness) and h (hue) correlates
+// __DEVICE__ inline float3 limit_RGB_to_JMh(float3 RGB)
+// {
+//     float3 luminanceRGB = RGB * boundaryRGB * referenceLuminance;
+//     float3 XYZ = vector_dot(RGB_to_XYZ_limit, luminanceRGB);
+//     float3 JMh = XYZ_to_Hellwig2022_JMh(XYZ, d65White);
+//     return JMh;
+// }
+
+// Scaled power(p)
+float spowerp(float x, float l, float p)
+{
+    x = x / l;
+    x = x != 0.0 ? x / pow(1.0 + spow(x, p), 1.0 / p) : 0.0;
+    return x * l;
+}
+
+float desat_curve(float x)
+  {
+    float m = daniele_n / daniele_n_r;
+    float w = 1.18 * m;
+    return (max(0.0, x) / (x + w)) * m;
+  }
+
+  // Hue-dependent curve used in chroma compression
+  // https://www.desmos.com/calculator/lmbbu8so4c
+float compr_hue_depend(float h)
+{
+    float hr = degrees_to_radians(h);
+    float hr2 = hr * 2.0;
+    float hr3 = hr * 3.0;
+
+    return (a.x * cos(hr) +
+            b.x * cos(hr2) +
+            c.x * cos(hr3) +
+            a.y * sin(hr) +
+            b.y * sin(hr2) +
+            c.y * sin(hr3) +
+            hoff) * hmul;
+}
+
+  // Chroma compression
+  //
+  // - Compresses the scene colorfulness with desat_curve() and spowerp() for
+  //   path-to-white and path-to-black.
+  // - Scales the colorfulness with a cubic curve to affect the rate of change of
+  //   desaturation as lightness is increased.  This is hue dependent and affects
+  //   a range of colorfulness (distance from the achromatic).
+  //
+float chromaCompression(vec3 JMh, float luminance, bool invert)
+{
+    float M = JMh.y;
+
+    float model_desat_factor = chromaCompress * 1.22;
+    float model_factor = 5.0;
+
+    // Path-to-white
+    //
+    // Compression curve based on the difference of the scene luminance and desat_curve().
+    // This scales automatically, compressing less with higher peak luminance.  Higher peak
+    // luminance has a slower rate of change for colorfulness so it needs less compression.
+    // The end variable can be used to affect how close to white point the curve ends, and
+    // prevents the curve ever going negative.
+    // https://www.desmos.com/calculator/ovy5wzr7lm
+    //
+    float end = 0.12;
+//     float x = log10(luminance) - log10(desat_curve(luminance));
+    float x = log10(max(float_epsilon, luminance)) - log10(max(float_epsilon, desat_curve(luminance)));
+    model_desat_factor += log(daniele_n / daniele_n_r) * 0.08;
+    float desatcurve = spowerp(x * model_desat_factor, chromaCompressParams.x, chromaCompressParams.y);
+    desatcurve = desatcurve < (1.0 - end) ? desatcurve : (1.0 - end) + end * tanh((desatcurve - (1.0 - end)) / end);
+
+    // Path-to-black
+    //
+    // Shadow compression to reduce clipping and colorfulness of noise.
+    // https://www.desmos.com/calculator/ovy5wzr7lm
+    //
+    float shadowcurve = ptanh(luminance, shadowCompressParams.x, shadowCompressParams.y, shadowCompressParams.z);
+
+    // In-gamut compression
+    //
+    // Hue-dependent compression of M with R (J) from achromatic outward.  The purpose is to make sure
+    // the interior of the gamut is smooth and even.  Larger values of R will compress larger range of
+    // colorfulness.  The c variable controls compression with R (1.0 no compression, 0.0001 full
+    // compression).  The driver is the tonescaled lightness in 0-1 range.  The shadow_boost affects
+    // saturation mainly at and under normal exposure.
+    // https://www.desmos.com/calculator/nygtri388c
+    //
+    float R = (JMh.x + 0.01) * model_factor * compr_hue_depend(JMh.z);
+    float c = max(1.0 - (JMh.x / limitJmax), 0.0001) * shadow_boost;
+
+    desatcurve = (1.0 - desatcurve) * shadowcurve;
+
+    if (!invert)
+    {
+      M *= desatcurve;
+      if (M != 0.0 && R != 0.0)
+      {
+        M *= ((M * M + R * c) / (M * M + R));
+      }
+      M *= sat;
+    }
+    else
+    {
+      M /= sat;
+      if (M != 0.0 && R != 0.0)
+      {
+        float t0 = 3.0 * R * c;
+        float p0 = M * M - t0;
+        float p1 = 2.0 * M * M + 27.0 * R - 3.0 * t0;
+        float p2 = spow((sqrt(M * M * p1 * p1 - 4.0 * p0 * p0 * p0) / 2.0) + M * p1 / 2.0, 1.0 / 3.0);
+        M = (p0 / (3.0 * p2) + (p2 / 3.0) + (M / 3.0));
+      }
+      M /= desatcurve;
+    }
+
+    return M;
+}
+
+vec3 forwardTonescale( vec3 inputJMh)
+{
+    vec3 outputJMh;
+    vec3 monoJMh = vec3(inputJMh.x, 0.0, 0.0);
+    vec3 luminanceXYZ = Hellwig2022_JMh_to_XYZ( monoJMh, d65White);
+    float linear = luminanceXYZ.y / referenceLuminance;
+
+    // only Daniele Evo tone scale
+    float luminanceTS = daniele_evo_fwd(linear);
+
+    vec3 tonemappedmonoJMh = XYZ_to_Hellwig2022_JMh(d65White * luminanceTS, d65White);
+    vec3 tonemappedJMh = vec3(tonemappedmonoJMh.x, inputJMh.y, inputJMh.z);
+
+    outputJMh = tonemappedJMh;
+
+    // Chroma Compression)
+    outputJMh.y = chromaCompression(outputJMh, linear, false);
+
+    return outputJMh;
+}
+
+// Smooth minimum of a and b
+float smin(float a, float b, float s)
+{
+    float h = max(s - abs(a - b), 0.0) / s;
+    return min(a, b) - h * h * h * s * (1.0 / 6.0);
+}
+
+vec2 find_gamut_intersection(vec2 cusp, vec2 from, vec2 to, float smoothing)
+{
+    float t0, t1;
+
+    // Scale the cusp outward when smoothing to avoid reducing the gamut.  Reduce
+    // smoothing for high cusps because smin() will bias it too much for the longer line.
+    float s = max(lerp(smoothing, smoothing * 0.01, cusp.x / limitJmax), 0.0001);
+    cusp.y += 15.0 * s;
+    cusp.x += 5.0 * s;
+
+    // Line below the cusp is curved with gamut_gamma
+    float toJ_gamma = cusp.x * spow(to.x / cusp.x, gamut_gamma);
+    float fromJ_gamma = cusp.x * spow(from.x / cusp.x, gamut_gamma);
+    t0 = cusp.y * toJ_gamma / (from.y * cusp.x + cusp.y * (toJ_gamma - fromJ_gamma));
+
+    // Line above the cusp
+    t1 = cusp.y * (to.x - limitJmax) / (from.y * (cusp.x - limitJmax) + cusp.y * (to.x - from.x));
+
+    // Smooth minimum to smooth the cusp
+    t1 = smin(abs(t0), abs(t1), s);
+
+    return vec2(to.x * (1.0 - t1) + t1 * from.x, t1 * from.y);
+}
+
+vec4 fn(vec4 val){
+    vec3 inval = val.rgb;
+    vec3 outval = inval;
+
+    inval.x = clamp(inval.x, -HALF_MAXIMUM, HALF_MAXIMUM);
+    inval.y = clamp(inval.y, -HALF_MAXIMUM, HALF_MAXIMUM);
+    inval.z = clamp(inval.z, -HALF_MAXIMUM, HALF_MAXIMUM);
+
+    vec3 inWhite = vec3(100.0, 100.0, 100.0) * AP0_ACES_to_XYZ_matrix;
+    vec3 XYZ = inval * AP0_ACES_to_XYZ_matrix;
+    XYZ *= referenceLuminance;
+    vec3 JMh = XYZ_to_Hellwig2022_JMh(XYZ, inWhite);
+    JMh = forwardTonescale(JMh);
+
+    vec2 gamutCuspTable[360];
+    if (limitGamut == 0) // Rec.709 100 nits
+    {
+        gamutCuspTable[0] = vec2(56.9, 85.9);
+        gamutCuspTable[1] = vec2(56.6, 86.1);
+        gamutCuspTable[2] = vec2(56.3, 86.3);
+        gamutCuspTable[3] = vec2(56.0, 86.3);
+        gamutCuspTable[4] = vec2(55.7, 86.4);
+        gamutCuspTable[5] = vec2(55.4, 86.4);
+        gamutCuspTable[6] = vec2(55.2, 86.4);
+        gamutCuspTable[7] = vec2(54.9, 86.2);
+        gamutCuspTable[8] = vec2(54.7, 86.1);
+        gamutCuspTable[9] = vec2(54.4, 85.8);
+        gamutCuspTable[10] = vec2(54.2, 85.6);
+        gamutCuspTable[11] = vec2(53.9, 85.2);
+        gamutCuspTable[12] = vec2(53.7, 84.9);
+        gamutCuspTable[13] = vec2(53.4, 84.4);
+        gamutCuspTable[14] = vec2(53.2, 84.0);
+        gamutCuspTable[15] = vec2(53.0, 83.5);
+        gamutCuspTable[16] = vec2(52.7, 83.0);
+        gamutCuspTable[17] = vec2(52.5, 82.5);
+        gamutCuspTable[18] = vec2(52.2, 82.0);
+        gamutCuspTable[19] = vec2(52.0, 81.5);
+        gamutCuspTable[20] = vec2(51.8, 81.0);
+        gamutCuspTable[21] = vec2(51.5, 80.5);
+        gamutCuspTable[22] = vec2(51.3, 79.9);
+        gamutCuspTable[23] = vec2(51.0, 79.4);
+        gamutCuspTable[24] = vec2(50.8, 78.9);
+        gamutCuspTable[25] = vec2(50.6, 78.4);
+        gamutCuspTable[26] = vec2(51.1, 76.6);
+        gamutCuspTable[27] = vec2(51.6, 74.9);
+        gamutCuspTable[28] = vec2(52.1, 73.3);
+        gamutCuspTable[29] = vec2(52.6, 71.8);
+        gamutCuspTable[30] = vec2(53.0, 70.4);
+        gamutCuspTable[31] = vec2(53.5, 69.1);
+        gamutCuspTable[32] = vec2(54.0, 67.8);
+        gamutCuspTable[33] = vec2(54.4, 66.7);
+        gamutCuspTable[34] = vec2(54.8, 65.5);
+        gamutCuspTable[35] = vec2(55.3, 64.5);
+        gamutCuspTable[36] = vec2(55.7, 63.5);
+        gamutCuspTable[37] = vec2(56.1, 62.5);
+        gamutCuspTable[38] = vec2(56.5, 61.6);
+        gamutCuspTable[39] = vec2(56.9, 60.8);
+        gamutCuspTable[40] = vec2(57.3, 59.9);
+        gamutCuspTable[41] = vec2(57.7, 59.2);
+        gamutCuspTable[42] = vec2(58.1, 58.5);
+        gamutCuspTable[43] = vec2(58.5, 57.8);
+        gamutCuspTable[44] = vec2(58.8, 57.1);
+        gamutCuspTable[45] = vec2(59.2, 56.5);
+        gamutCuspTable[46] = vec2(59.6, 55.9);
+        gamutCuspTable[47] = vec2(60.0, 55.3);
+        gamutCuspTable[48] = vec2(60.3, 54.9);
+        gamutCuspTable[49] = vec2(60.7, 54.4);
+        gamutCuspTable[50] = vec2(61.0, 53.9);
+        gamutCuspTable[51] = vec2(61.4, 53.4);
+        gamutCuspTable[52] = vec2(61.7, 53.0);
+        gamutCuspTable[53] = vec2(62.1, 52.7);
+        gamutCuspTable[54] = vec2(62.4, 52.3);
+        gamutCuspTable[55] = vec2(62.8, 51.9);
+        gamutCuspTable[56] = vec2(63.1, 51.6);
+        gamutCuspTable[57] = vec2(63.4, 51.3);
+        gamutCuspTable[58] = vec2(63.8, 51.0);
+        gamutCuspTable[59] = vec2(64.1, 50.8);
+        gamutCuspTable[60] = vec2(64.5, 50.5);
+        gamutCuspTable[61] = vec2(64.8, 50.3);
+        gamutCuspTable[62] = vec2(65.1, 50.1);
+        gamutCuspTable[63] = vec2(65.5, 49.9);
+        gamutCuspTable[64] = vec2(65.8, 49.7);
+        gamutCuspTable[65] = vec2(66.2, 49.6);
+        gamutCuspTable[66] = vec2(66.5, 49.4);
+        gamutCuspTable[67] = vec2(66.9, 49.4);
+        gamutCuspTable[68] = vec2(67.2, 49.2);
+        gamutCuspTable[69] = vec2(67.6, 49.2);
+        gamutCuspTable[70] = vec2(67.9, 49.1);
+        gamutCuspTable[71] = vec2(68.3, 49.1);
+        gamutCuspTable[72] = vec2(68.6, 49.0);
+        gamutCuspTable[73] = vec2(69.0, 49.0);
+        gamutCuspTable[74] = vec2(69.4, 49.0);
+        gamutCuspTable[75] = vec2(69.7, 49.0);
+        gamutCuspTable[76] = vec2(70.1, 49.1);
+        gamutCuspTable[77] = vec2(70.4, 49.1);
+        gamutCuspTable[78] = vec2(70.8, 49.2);
+        gamutCuspTable[79] = vec2(71.2, 49.3);
+        gamutCuspTable[80] = vec2(71.6, 49.4);
+        gamutCuspTable[81] = vec2(72.0, 49.5);
+        gamutCuspTable[82] = vec2(72.4, 49.7);
+        gamutCuspTable[83] = vec2(72.8, 49.8);
+        gamutCuspTable[84] = vec2(73.2, 50.0);
+        gamutCuspTable[85] = vec2(73.6, 50.2);
+        gamutCuspTable[86] = vec2(74.0, 50.4);
+        gamutCuspTable[87] = vec2(74.5, 50.7);
+        gamutCuspTable[88] = vec2(74.9, 50.9);
+        gamutCuspTable[89] = vec2(75.4, 51.2);
+        gamutCuspTable[90] = vec2(75.8, 51.5);
+        gamutCuspTable[91] = vec2(76.3, 51.8);
+        gamutCuspTable[92] = vec2(76.8, 52.2);
+        gamutCuspTable[93] = vec2(77.3, 52.5);
+        gamutCuspTable[94] = vec2(77.8, 52.9);
+        gamutCuspTable[95] = vec2(78.3, 53.3);
+        gamutCuspTable[96] = vec2(78.8, 53.7);
+        gamutCuspTable[97] = vec2(79.4, 54.2);
+        gamutCuspTable[98] = vec2(79.9, 54.7);
+        gamutCuspTable[99] = vec2(80.5, 55.2);
+        gamutCuspTable[100] = vec2(81.1, 55.8);
+        gamutCuspTable[101] = vec2(81.7, 56.4);
+        gamutCuspTable[102] = vec2(82.3, 57.0);
+        gamutCuspTable[103] = vec2(83.0, 57.7);
+        gamutCuspTable[104] = vec2(83.7, 58.4);
+        gamutCuspTable[105] = vec2(84.4, 59.1);
+        gamutCuspTable[106] = vec2(85.1, 59.9);
+        gamutCuspTable[107] = vec2(85.9, 60.7);
+        gamutCuspTable[108] = vec2(86.7, 61.6);
+        gamutCuspTable[109] = vec2(87.5, 62.5);
+        gamutCuspTable[110] = vec2(87.7, 63.1);
+        gamutCuspTable[111] = vec2(87.3, 63.3);
+        gamutCuspTable[112] = vec2(86.9, 63.5);
+        gamutCuspTable[113] = vec2(86.5, 63.7);
+        gamutCuspTable[114] = vec2(86.1, 64.0);
+        gamutCuspTable[115] = vec2(85.7, 64.3);
+        gamutCuspTable[116] = vec2(85.3, 64.7);
+        gamutCuspTable[117] = vec2(84.9, 65.0);
+        gamutCuspTable[118] = vec2(84.5, 65.4);
+        gamutCuspTable[119] = vec2(84.0, 65.7);
+        gamutCuspTable[120] = vec2(83.6, 66.2);
+        gamutCuspTable[121] = vec2(83.2, 66.6);
+        gamutCuspTable[122] = vec2(82.8, 67.1);
+        gamutCuspTable[123] = vec2(82.4, 67.7);
+        gamutCuspTable[124] = vec2(81.9, 68.1);
+        gamutCuspTable[125] = vec2(81.5, 68.7);
+        gamutCuspTable[126] = vec2(81.0, 69.3);
+        gamutCuspTable[127] = vec2(80.6, 70.0);
+        gamutCuspTable[128] = vec2(80.1, 70.6);
+        gamutCuspTable[129] = vec2(79.7, 71.4);
+        gamutCuspTable[130] = vec2(79.2, 72.1);
+        gamutCuspTable[131] = vec2(78.7, 72.9);
+        gamutCuspTable[132] = vec2(78.2, 73.7);
+        gamutCuspTable[133] = vec2(77.7, 74.5);
+        gamutCuspTable[134] = vec2(77.2, 75.5);
+        gamutCuspTable[135] = vec2(76.7, 76.4);
+        gamutCuspTable[136] = vec2(76.2, 77.5);
+        gamutCuspTable[137] = vec2(75.7, 78.5);
+        gamutCuspTable[138] = vec2(75.1, 79.6);
+        gamutCuspTable[139] = vec2(74.6, 80.9);
+        gamutCuspTable[140] = vec2(74.0, 82.1);
+        gamutCuspTable[141] = vec2(73.9, 82.0);
+        gamutCuspTable[142] = vec2(74.4, 80.5);
+        gamutCuspTable[143] = vec2(74.9, 79.1);
+        gamutCuspTable[144] = vec2(75.3, 77.7);
+        gamutCuspTable[145] = vec2(75.7, 76.3);
+        gamutCuspTable[146] = vec2(76.1, 75.1);
+        gamutCuspTable[147] = vec2(76.5, 73.8);
+        gamutCuspTable[148] = vec2(76.8, 72.5);
+        gamutCuspTable[149] = vec2(77.2, 71.4);
+        gamutCuspTable[150] = vec2(77.5, 70.2);
+        gamutCuspTable[151] = vec2(77.8, 69.1);
+        gamutCuspTable[152] = vec2(78.1, 68.0);
+        gamutCuspTable[153] = vec2(78.4, 67.0);
+        gamutCuspTable[154] = vec2(78.7, 65.9);
+        gamutCuspTable[155] = vec2(78.9, 65.0);
+        gamutCuspTable[156] = vec2(79.2, 64.0);
+        gamutCuspTable[157] = vec2(79.4, 63.1);
+        gamutCuspTable[158] = vec2(79.7, 62.2);
+        gamutCuspTable[159] = vec2(79.9, 61.3);
+        gamutCuspTable[160] = vec2(80.1, 60.5);
+        gamutCuspTable[161] = vec2(80.3, 59.6);
+        gamutCuspTable[162] = vec2(80.6, 58.9);
+        gamutCuspTable[163] = vec2(80.8, 58.1);
+        gamutCuspTable[164] = vec2(81.0, 57.4);
+        gamutCuspTable[165] = vec2(81.2, 56.7);
+        gamutCuspTable[166] = vec2(81.4, 56.0);
+        gamutCuspTable[167] = vec2(81.6, 55.3);
+        gamutCuspTable[168] = vec2(81.8, 54.7);
+        gamutCuspTable[169] = vec2(82.0, 54.1);
+        gamutCuspTable[170] = vec2(82.2, 53.5);
+        gamutCuspTable[171] = vec2(82.4, 52.9);
+        gamutCuspTable[172] = vec2(82.6, 52.3);
+        gamutCuspTable[173] = vec2(82.7, 51.7);
+        gamutCuspTable[174] = vec2(82.9, 51.2);
+        gamutCuspTable[175] = vec2(83.1, 50.8);
+        gamutCuspTable[176] = vec2(83.3, 50.3);
+        gamutCuspTable[177] = vec2(83.5, 49.8);
+        gamutCuspTable[178] = vec2(83.7, 49.3);
+        gamutCuspTable[179] = vec2(83.8, 48.9);
+        gamutCuspTable[180] = vec2(84.0, 48.5);
+        gamutCuspTable[181] = vec2(84.2, 48.1);
+        gamutCuspTable[182] = vec2(84.4, 47.7);
+        gamutCuspTable[183] = vec2(84.6, 47.3);
+        gamutCuspTable[184] = vec2(84.7, 47.0);
+        gamutCuspTable[185] = vec2(84.9, 46.7);
+        gamutCuspTable[186] = vec2(85.1, 46.4);
+        gamutCuspTable[187] = vec2(85.3, 46.1);
+        gamutCuspTable[188] = vec2(85.5, 45.8);
+        gamutCuspTable[189] = vec2(85.7, 45.6);
+        gamutCuspTable[190] = vec2(85.9, 45.3);
+        gamutCuspTable[191] = vec2(86.0, 45.0);
+        gamutCuspTable[192] = vec2(86.2, 44.8);
+        gamutCuspTable[193] = vec2(86.4, 44.7);
+        gamutCuspTable[194] = vec2(86.6, 44.5);
+        gamutCuspTable[195] = vec2(86.8, 44.3);
+        gamutCuspTable[196] = vec2(86.5, 44.0);
+        gamutCuspTable[197] = vec2(85.9, 43.5);
+        gamutCuspTable[198] = vec2(85.4, 43.0);
+        gamutCuspTable[199] = vec2(84.9, 42.7);
+        gamutCuspTable[200] = vec2(84.4, 42.3);
+        gamutCuspTable[201] = vec2(83.9, 41.9);
+        gamutCuspTable[202] = vec2(83.3, 41.5);
+        gamutCuspTable[203] = vec2(82.9, 41.1);
+        gamutCuspTable[204] = vec2(82.4, 40.8);
+        gamutCuspTable[205] = vec2(81.8, 40.5);
+        gamutCuspTable[206] = vec2(81.5, 40.2);
+        gamutCuspTable[207] = vec2(81.0, 39.9);
+        gamutCuspTable[208] = vec2(80.5, 39.6);
+        gamutCuspTable[209] = vec2(80.1, 39.4);
+        gamutCuspTable[210] = vec2(79.7, 39.1);
+        gamutCuspTable[211] = vec2(79.2, 38.9);
+        gamutCuspTable[212] = vec2(78.8, 38.6);
+        gamutCuspTable[213] = vec2(78.4, 38.5);
+        gamutCuspTable[214] = vec2(77.9, 38.3);
+        gamutCuspTable[215] = vec2(77.6, 38.1);
+        gamutCuspTable[216] = vec2(77.2, 37.9);
+        gamutCuspTable[217] = vec2(76.8, 37.8);
+        gamutCuspTable[218] = vec2(76.4, 37.6);
+        gamutCuspTable[219] = vec2(76.0, 37.5);
+        gamutCuspTable[220] = vec2(75.5, 37.3);
+        gamutCuspTable[221] = vec2(75.2, 37.2);
+        gamutCuspTable[222] = vec2(74.8, 37.1);
+        gamutCuspTable[223] = vec2(74.5, 37.0);
+        gamutCuspTable[224] = vec2(74.0, 36.9);
+        gamutCuspTable[225] = vec2(73.7, 36.9);
+        gamutCuspTable[226] = vec2(73.3, 36.8);
+        gamutCuspTable[227] = vec2(72.9, 36.7);
+        gamutCuspTable[228] = vec2(72.5, 36.7);
+        gamutCuspTable[229] = vec2(72.2, 36.6);
+        gamutCuspTable[230] = vec2(71.8, 36.6);
+        gamutCuspTable[231] = vec2(71.5, 36.6);
+        gamutCuspTable[232] = vec2(71.1, 36.6);
+        gamutCuspTable[233] = vec2(70.7, 36.6);
+        gamutCuspTable[234] = vec2(70.4, 36.6);
+        gamutCuspTable[235] = vec2(70.0, 36.6);
+        gamutCuspTable[236] = vec2(69.7, 36.7);
+        gamutCuspTable[237] = vec2(69.3, 36.7);
+        gamutCuspTable[238] = vec2(68.9, 36.7);
+        gamutCuspTable[239] = vec2(68.6, 36.8);
+        gamutCuspTable[240] = vec2(68.2, 36.9);
+        gamutCuspTable[241] = vec2(67.9, 37.0);
+        gamutCuspTable[242] = vec2(67.5, 37.1);
+        gamutCuspTable[243] = vec2(67.1, 37.1);
+        gamutCuspTable[244] = vec2(66.8, 37.3);
+        gamutCuspTable[245] = vec2(66.4, 37.4);
+        gamutCuspTable[246] = vec2(66.0, 37.5);
+        gamutCuspTable[247] = vec2(65.7, 37.7);
+        gamutCuspTable[248] = vec2(65.3, 37.8);
+        gamutCuspTable[249] = vec2(64.9, 38.0);
+        gamutCuspTable[250] = vec2(64.5, 38.1);
+        gamutCuspTable[251] = vec2(64.1, 38.3);
+        gamutCuspTable[252] = vec2(63.8, 38.5);
+        gamutCuspTable[253] = vec2(63.4, 38.7);
+        gamutCuspTable[254] = vec2(63.0, 38.9);
+        gamutCuspTable[255] = vec2(62.6, 39.1);
+        gamutCuspTable[256] = vec2(62.2, 39.4);
+        gamutCuspTable[257] = vec2(61.8, 39.6);
+        gamutCuspTable[258] = vec2(61.5, 39.9);
+        gamutCuspTable[259] = vec2(61.1, 40.2);
+        gamutCuspTable[260] = vec2(60.7, 40.5);
+        gamutCuspTable[261] = vec2(60.3, 40.8);
+        gamutCuspTable[262] = vec2(59.9, 41.1);
+        gamutCuspTable[263] = vec2(59.5, 41.4);
+        gamutCuspTable[264] = vec2(59.0, 41.8);
+        gamutCuspTable[265] = vec2(58.6, 42.1);
+        gamutCuspTable[266] = vec2(58.2, 42.6);
+        gamutCuspTable[267] = vec2(57.8, 42.9);
+        gamutCuspTable[268] = vec2(57.3, 43.3);
+        gamutCuspTable[269] = vec2(56.9, 43.8);
+        gamutCuspTable[270] = vec2(56.4, 44.2);
+        gamutCuspTable[271] = vec2(56.0, 44.6);
+        gamutCuspTable[272] = vec2(55.5, 45.1);
+        gamutCuspTable[273] = vec2(55.1, 45.6);
+        gamutCuspTable[274] = vec2(54.6, 46.1);
+        gamutCuspTable[275] = vec2(54.1, 46.7);
+        gamutCuspTable[276] = vec2(53.6, 47.2);
+        gamutCuspTable[277] = vec2(53.2, 47.8);
+        gamutCuspTable[278] = vec2(52.7, 48.4);
+        gamutCuspTable[279] = vec2(52.1, 49.0);
+        gamutCuspTable[280] = vec2(51.7, 49.7);
+        gamutCuspTable[281] = vec2(51.1, 50.4);
+        gamutCuspTable[282] = vec2(50.6, 51.1);
+        gamutCuspTable[283] = vec2(50.1, 51.8);
+        gamutCuspTable[284] = vec2(49.5, 52.6);
+        gamutCuspTable[285] = vec2(49.3, 53.0);
+        gamutCuspTable[286] = vec2(49.6, 53.1);
+        gamutCuspTable[287] = vec2(49.8, 53.2);
+        gamutCuspTable[288] = vec2(50.0, 53.3);
+        gamutCuspTable[289] = vec2(50.3, 53.4);
+        gamutCuspTable[290] = vec2(50.6, 53.5);
+        gamutCuspTable[291] = vec2(50.8, 53.6);
+        gamutCuspTable[292] = vec2(51.1, 53.8);
+        gamutCuspTable[293] = vec2(51.3, 54.0);
+        gamutCuspTable[294] = vec2(51.6, 54.2);
+        gamutCuspTable[295] = vec2(51.8, 54.4);
+        gamutCuspTable[296] = vec2(52.1, 54.6);
+        gamutCuspTable[297] = vec2(52.4, 54.8);
+        gamutCuspTable[298] = vec2(52.6, 55.1);
+        gamutCuspTable[299] = vec2(52.9, 55.4);
+        gamutCuspTable[300] = vec2(53.2, 55.6);
+        gamutCuspTable[301] = vec2(53.5, 56.0);
+        gamutCuspTable[302] = vec2(53.8, 56.3);
+        gamutCuspTable[303] = vec2(54.1, 56.6);
+        gamutCuspTable[304] = vec2(54.4, 57.0);
+        gamutCuspTable[305] = vec2(54.7, 57.4);
+        gamutCuspTable[306] = vec2(55.0, 57.8);
+        gamutCuspTable[307] = vec2(55.3, 58.2);
+        gamutCuspTable[308] = vec2(55.6, 58.6);
+        gamutCuspTable[309] = vec2(56.0, 59.1);
+        gamutCuspTable[310] = vec2(56.3, 59.6);
+        gamutCuspTable[311] = vec2(56.6, 60.1);
+        gamutCuspTable[312] = vec2(57.0, 60.6);
+        gamutCuspTable[313] = vec2(57.4, 61.2);
+        gamutCuspTable[314] = vec2(57.7, 61.8);
+        gamutCuspTable[315] = vec2(58.1, 62.4);
+        gamutCuspTable[316] = vec2(58.5, 63.1);
+        gamutCuspTable[317] = vec2(58.9, 63.7);
+        gamutCuspTable[318] = vec2(59.3, 64.4);
+        gamutCuspTable[319] = vec2(59.8, 65.2);
+        gamutCuspTable[320] = vec2(60.2, 65.9);
+        gamutCuspTable[321] = vec2(60.7, 66.7);
+        gamutCuspTable[322] = vec2(61.1, 67.6);
+        gamutCuspTable[323] = vec2(61.6, 68.4);
+        gamutCuspTable[324] = vec2(62.1, 69.4);
+        gamutCuspTable[325] = vec2(62.6, 70.3);
+        gamutCuspTable[326] = vec2(63.1, 71.2);
+        gamutCuspTable[327] = vec2(63.7, 72.3);
+        gamutCuspTable[328] = vec2(64.3, 73.4);
+        gamutCuspTable[329] = vec2(64.9, 74.4);
+        gamutCuspTable[330] = vec2(65.5, 75.7);
+        gamutCuspTable[331] = vec2(66.1, 76.8);
+        gamutCuspTable[332] = vec2(66.8, 78.1);
+        gamutCuspTable[333] = vec2(67.5, 79.4);
+        gamutCuspTable[334] = vec2(68.2, 80.7);
+        gamutCuspTable[335] = vec2(68.6, 81.8);
+        gamutCuspTable[336] = vec2(68.0, 81.8);
+        gamutCuspTable[337] = vec2(67.3, 81.8);
+        gamutCuspTable[338] = vec2(66.7, 81.9);
+        gamutCuspTable[339] = vec2(66.1, 82.0);
+        gamutCuspTable[340] = vec2(65.6, 82.1);
+        gamutCuspTable[341] = vec2(65.0, 82.2);
+        gamutCuspTable[342] = vec2(64.5, 82.3);
+        gamutCuspTable[343] = vec2(63.9, 82.4);
+        gamutCuspTable[344] = vec2(63.4, 82.5);
+        gamutCuspTable[345] = vec2(62.9, 82.7);
+        gamutCuspTable[346] = vec2(62.4, 82.8);
+        gamutCuspTable[347] = vec2(61.9, 83.0);
+        gamutCuspTable[348] = vec2(61.5, 83.2);
+        gamutCuspTable[349] = vec2(61.0, 83.3);
+        gamutCuspTable[350] = vec2(60.6, 83.6);
+        gamutCuspTable[351] = vec2(60.2, 83.8);
+        gamutCuspTable[352] = vec2(59.8, 83.9);
+        gamutCuspTable[353] = vec2(59.4, 84.2);
+        gamutCuspTable[354] = vec2(59.0, 84.4);
+        gamutCuspTable[355] = vec2(58.6, 84.6);
+        gamutCuspTable[356] = vec2(58.2, 84.9);
+        gamutCuspTable[357] = vec2(57.9, 85.1);
+        gamutCuspTable[358] = vec2(57.5, 85.4);
+        gamutCuspTable[359] = vec2(57.2, 85.6);
+    }
+    if (limitGamut == 1) // P3-D65 1000 nits
+    {
+        gamutCuspTable[0] = vec2(174.3, 247.9);
+        gamutCuspTable[1] = vec2(173.8, 247.2);
+        gamutCuspTable[2] = vec2(173.2, 246.5);
+        gamutCuspTable[3] = vec2(172.6, 245.7);
+        gamutCuspTable[4] = vec2(172.1, 245.0);
+        gamutCuspTable[5] = vec2(171.4, 244.2);
+        gamutCuspTable[6] = vec2(170.8, 243.5);
+        gamutCuspTable[7] = vec2(170.1, 242.6);
+        gamutCuspTable[8] = vec2(169.4, 241.7);
+        gamutCuspTable[9] = vec2(168.7, 240.9);
+        gamutCuspTable[10] = vec2(167.9, 239.9);
+        gamutCuspTable[11] = vec2(167.1, 238.9);
+        gamutCuspTable[12] = vec2(166.3, 237.9);
+        gamutCuspTable[13] = vec2(165.4, 236.7);
+        gamutCuspTable[14] = vec2(164.6, 235.7);
+        gamutCuspTable[15] = vec2(163.7, 234.6);
+        gamutCuspTable[16] = vec2(162.8, 233.4);
+        gamutCuspTable[17] = vec2(161.8, 232.2);
+        gamutCuspTable[18] = vec2(160.9, 231.1);
+        gamutCuspTable[19] = vec2(159.9, 229.9);
+        gamutCuspTable[20] = vec2(158.9, 228.6);
+        gamutCuspTable[21] = vec2(158.0, 227.4);
+        gamutCuspTable[22] = vec2(157.0, 226.2);
+        gamutCuspTable[23] = vec2(156.0, 225.0);
+        gamutCuspTable[24] = vec2(155.0, 223.7);
+        gamutCuspTable[25] = vec2(154.0, 222.5);
+        gamutCuspTable[26] = vec2(154.6, 218.7);
+        gamutCuspTable[27] = vec2(155.9, 213.8);
+        gamutCuspTable[28] = vec2(157.1, 209.3);
+        gamutCuspTable[29] = vec2(158.4, 205.0);
+        gamutCuspTable[30] = vec2(159.6, 201.0);
+        gamutCuspTable[31] = vec2(160.7, 197.1);
+        gamutCuspTable[32] = vec2(161.9, 193.6);
+        gamutCuspTable[33] = vec2(163.0, 190.2);
+        gamutCuspTable[34] = vec2(164.1, 187.0);
+        gamutCuspTable[35] = vec2(165.2, 183.9);
+        gamutCuspTable[36] = vec2(166.2, 181.0);
+        gamutCuspTable[37] = vec2(167.3, 178.2);
+        gamutCuspTable[38] = vec2(168.3, 175.7);
+        gamutCuspTable[39] = vec2(169.3, 173.2);
+        gamutCuspTable[40] = vec2(170.3, 170.8);
+        gamutCuspTable[41] = vec2(171.2, 168.6);
+        gamutCuspTable[42] = vec2(172.2, 166.6);
+        gamutCuspTable[43] = vec2(173.1, 164.6);
+        gamutCuspTable[44] = vec2(174.1, 162.7);
+        gamutCuspTable[45] = vec2(175.0, 160.9);
+        gamutCuspTable[46] = vec2(175.9, 159.2);
+        gamutCuspTable[47] = vec2(176.8, 157.6);
+        gamutCuspTable[48] = vec2(177.7, 156.1);
+        gamutCuspTable[49] = vec2(178.6, 154.6);
+        gamutCuspTable[50] = vec2(179.4, 153.2);
+        gamutCuspTable[51] = vec2(180.3, 152.0);
+        gamutCuspTable[52] = vec2(181.2, 150.8);
+        gamutCuspTable[53] = vec2(182.0, 149.6);
+        gamutCuspTable[54] = vec2(182.9, 148.5);
+        gamutCuspTable[55] = vec2(183.8, 147.5);
+        gamutCuspTable[56] = vec2(184.6, 146.5);
+        gamutCuspTable[57] = vec2(185.4, 145.6);
+        gamutCuspTable[58] = vec2(186.3, 144.8);
+        gamutCuspTable[59] = vec2(187.1, 144.0);
+        gamutCuspTable[60] = vec2(188.0, 143.3);
+        gamutCuspTable[61] = vec2(188.8, 142.7);
+        gamutCuspTable[62] = vec2(189.6, 142.0);
+        gamutCuspTable[63] = vec2(190.5, 141.5);
+        gamutCuspTable[64] = vec2(191.3, 141.0);
+        gamutCuspTable[65] = vec2(192.2, 140.5);
+        gamutCuspTable[66] = vec2(193.0, 140.1);
+        gamutCuspTable[67] = vec2(193.9, 139.7);
+        gamutCuspTable[68] = vec2(194.7, 139.4);
+        gamutCuspTable[69] = vec2(195.6, 139.2);
+        gamutCuspTable[70] = vec2(196.4, 138.9);
+        gamutCuspTable[71] = vec2(197.3, 138.8);
+        gamutCuspTable[72] = vec2(198.2, 138.6);
+        gamutCuspTable[73] = vec2(199.0, 138.6);
+        gamutCuspTable[74] = vec2(199.9, 138.6);
+        gamutCuspTable[75] = vec2(200.8, 138.6);
+        gamutCuspTable[76] = vec2(201.7, 138.6);
+        gamutCuspTable[77] = vec2(202.6, 138.7);
+        gamutCuspTable[78] = vec2(203.5, 138.9);
+        gamutCuspTable[79] = vec2(204.4, 139.1);
+        gamutCuspTable[80] = vec2(205.4, 139.4);
+        gamutCuspTable[81] = vec2(206.3, 139.6);
+        gamutCuspTable[82] = vec2(207.3, 140.0);
+        gamutCuspTable[83] = vec2(208.3, 140.4);
+        gamutCuspTable[84] = vec2(209.3, 140.8);
+        gamutCuspTable[85] = vec2(210.3, 141.3);
+        gamutCuspTable[86] = vec2(211.3, 141.9);
+        gamutCuspTable[87] = vec2(212.3, 142.5);
+        gamutCuspTable[88] = vec2(213.4, 143.2);
+        gamutCuspTable[89] = vec2(214.5, 143.8);
+        gamutCuspTable[90] = vec2(215.6, 144.6);
+        gamutCuspTable[91] = vec2(216.7, 145.5);
+        gamutCuspTable[92] = vec2(217.8, 146.3);
+        gamutCuspTable[93] = vec2(219.0, 147.3);
+        gamutCuspTable[94] = vec2(220.2, 148.3);
+        gamutCuspTable[95] = vec2(221.5, 149.3);
+        gamutCuspTable[96] = vec2(222.7, 150.5);
+        gamutCuspTable[97] = vec2(224.0, 151.7);
+        gamutCuspTable[98] = vec2(225.4, 153.0);
+        gamutCuspTable[99] = vec2(226.7, 154.4);
+        gamutCuspTable[100] = vec2(228.1, 155.8);
+        gamutCuspTable[101] = vec2(229.6, 157.4);
+        gamutCuspTable[102] = vec2(231.1, 159.0);
+        gamutCuspTable[103] = vec2(232.7, 160.8);
+        gamutCuspTable[104] = vec2(234.3, 162.6);
+        gamutCuspTable[105] = vec2(236.0, 164.5);
+        gamutCuspTable[106] = vec2(237.7, 166.5);
+        gamutCuspTable[107] = vec2(239.5, 168.7);
+        gamutCuspTable[108] = vec2(241.4, 171.0);
+        gamutCuspTable[109] = vec2(243.3, 173.3);
+        gamutCuspTable[110] = vec2(244.5, 175.3);
+        gamutCuspTable[111] = vec2(243.3, 176.0);
+        gamutCuspTable[112] = vec2(242.1, 176.7);
+        gamutCuspTable[113] = vec2(240.9, 177.5);
+        gamutCuspTable[114] = vec2(239.8, 178.3);
+        gamutCuspTable[115] = vec2(238.6, 179.3);
+        gamutCuspTable[116] = vec2(237.4, 180.3);
+        gamutCuspTable[117] = vec2(236.2, 181.3);
+        gamutCuspTable[118] = vec2(235.0, 182.4);
+        gamutCuspTable[119] = vec2(233.7, 183.6);
+        gamutCuspTable[120] = vec2(232.5, 184.9);
+        gamutCuspTable[121] = vec2(231.2, 186.2);
+        gamutCuspTable[122] = vec2(230.0, 187.7);
+        gamutCuspTable[123] = vec2(228.7, 189.2);
+        gamutCuspTable[124] = vec2(227.4, 190.8);
+        gamutCuspTable[125] = vec2(226.1, 192.5);
+        gamutCuspTable[126] = vec2(224.8, 194.3);
+        gamutCuspTable[127] = vec2(223.5, 196.2);
+        gamutCuspTable[128] = vec2(222.1, 198.1);
+        gamutCuspTable[129] = vec2(220.7, 200.2);
+        gamutCuspTable[130] = vec2(219.3, 202.4);
+        gamutCuspTable[131] = vec2(217.9, 204.8);
+        gamutCuspTable[132] = vec2(216.5, 207.2);
+        gamutCuspTable[133] = vec2(215.0, 209.8);
+        gamutCuspTable[134] = vec2(213.5, 212.5);
+        gamutCuspTable[135] = vec2(212.0, 215.3);
+        gamutCuspTable[136] = vec2(210.4, 218.4);
+        gamutCuspTable[137] = vec2(208.8, 221.5);
+        gamutCuspTable[138] = vec2(207.2, 224.8);
+        gamutCuspTable[139] = vec2(205.5, 228.4);
+        gamutCuspTable[140] = vec2(203.8, 232.0);
+        gamutCuspTable[141] = vec2(202.0, 236.0);
+        gamutCuspTable[142] = vec2(200.2, 240.1);
+        gamutCuspTable[143] = vec2(201.5, 237.2);
+        gamutCuspTable[144] = vec2(202.9, 233.8);
+        gamutCuspTable[145] = vec2(204.3, 230.6);
+        gamutCuspTable[146] = vec2(205.7, 227.4);
+        gamutCuspTable[147] = vec2(207.0, 224.3);
+        gamutCuspTable[148] = vec2(208.2, 221.3);
+        gamutCuspTable[149] = vec2(209.4, 218.4);
+        gamutCuspTable[150] = vec2(210.5, 215.5);
+        gamutCuspTable[151] = vec2(211.5, 212.7);
+        gamutCuspTable[152] = vec2(212.6, 210.0);
+        gamutCuspTable[153] = vec2(213.6, 207.3);
+        gamutCuspTable[154] = vec2(214.5, 204.6);
+        gamutCuspTable[155] = vec2(215.4, 202.0);
+        gamutCuspTable[156] = vec2(216.3, 199.5);
+        gamutCuspTable[157] = vec2(217.2, 197.0);
+        gamutCuspTable[158] = vec2(218.0, 194.6);
+        gamutCuspTable[159] = vec2(218.8, 192.2);
+        gamutCuspTable[160] = vec2(219.6, 189.9);
+        gamutCuspTable[161] = vec2(220.3, 187.5);
+        gamutCuspTable[162] = vec2(221.1, 185.3);
+        gamutCuspTable[163] = vec2(221.8, 183.1);
+        gamutCuspTable[164] = vec2(222.5, 180.9);
+        gamutCuspTable[165] = vec2(223.2, 178.8);
+        gamutCuspTable[166] = vec2(223.9, 176.7);
+        gamutCuspTable[167] = vec2(224.6, 174.7);
+        gamutCuspTable[168] = vec2(225.3, 172.7);
+        gamutCuspTable[169] = vec2(226.0, 170.8);
+        gamutCuspTable[170] = vec2(226.6, 168.9);
+        gamutCuspTable[171] = vec2(227.3, 167.0);
+        gamutCuspTable[172] = vec2(227.9, 165.2);
+        gamutCuspTable[173] = vec2(228.6, 163.4);
+        gamutCuspTable[174] = vec2(229.2, 161.7);
+        gamutCuspTable[175] = vec2(229.9, 160.0);
+        gamutCuspTable[176] = vec2(230.5, 158.3);
+        gamutCuspTable[177] = vec2(231.2, 156.6);
+        gamutCuspTable[178] = vec2(231.9, 155.0);
+        gamutCuspTable[179] = vec2(232.5, 153.5);
+        gamutCuspTable[180] = vec2(233.2, 152.0);
+        gamutCuspTable[181] = vec2(233.8, 150.6);
+        gamutCuspTable[182] = vec2(234.5, 149.2);
+        gamutCuspTable[183] = vec2(235.2, 147.9);
+        gamutCuspTable[184] = vec2(235.9, 146.6);
+        gamutCuspTable[185] = vec2(236.5, 145.4);
+        gamutCuspTable[186] = vec2(237.2, 144.3);
+        gamutCuspTable[187] = vec2(237.9, 143.2);
+        gamutCuspTable[188] = vec2(238.6, 142.1);
+        gamutCuspTable[189] = vec2(239.3, 141.2);
+        gamutCuspTable[190] = vec2(240.0, 140.2);
+        gamutCuspTable[191] = vec2(240.7, 139.3);
+        gamutCuspTable[192] = vec2(241.4, 138.5);
+        gamutCuspTable[193] = vec2(242.1, 137.7);
+        gamutCuspTable[194] = vec2(242.8, 136.9);
+        gamutCuspTable[195] = vec2(241.3, 135.2);
+        gamutCuspTable[196] = vec2(239.6, 133.5);
+        gamutCuspTable[197] = vec2(238.0, 131.8);
+        gamutCuspTable[198] = vec2(236.4, 130.2);
+        gamutCuspTable[199] = vec2(234.9, 128.7);
+        gamutCuspTable[200] = vec2(233.4, 127.2);
+        gamutCuspTable[201] = vec2(232.0, 125.8);
+        gamutCuspTable[202] = vec2(230.5, 124.5);
+        gamutCuspTable[203] = vec2(229.1, 123.2);
+        gamutCuspTable[204] = vec2(227.8, 122.0);
+        gamutCuspTable[205] = vec2(226.5, 120.8);
+        gamutCuspTable[206] = vec2(225.1, 119.6);
+        gamutCuspTable[207] = vec2(223.9, 118.6);
+        gamutCuspTable[208] = vec2(222.6, 117.5);
+        gamutCuspTable[209] = vec2(221.4, 116.5);
+        gamutCuspTable[210] = vec2(220.2, 115.6);
+        gamutCuspTable[211] = vec2(219.0, 114.7);
+        gamutCuspTable[212] = vec2(217.8, 113.8);
+        gamutCuspTable[213] = vec2(216.6, 112.9);
+        gamutCuspTable[214] = vec2(215.5, 112.2);
+        gamutCuspTable[215] = vec2(214.4, 111.4);
+        gamutCuspTable[216] = vec2(213.3, 110.7);
+        gamutCuspTable[217] = vec2(212.2, 110.0);
+        gamutCuspTable[218] = vec2(211.2, 109.4);
+        gamutCuspTable[219] = vec2(210.1, 108.7);
+        gamutCuspTable[220] = vec2(209.1, 108.2);
+        gamutCuspTable[221] = vec2(208.0, 107.6);
+        gamutCuspTable[222] = vec2(207.0, 107.1);
+        gamutCuspTable[223] = vec2(206.0, 106.6);
+        gamutCuspTable[224] = vec2(205.1, 106.1);
+        gamutCuspTable[225] = vec2(204.1, 105.7);
+        gamutCuspTable[226] = vec2(203.1, 105.3);
+        gamutCuspTable[227] = vec2(202.1, 105.0);
+        gamutCuspTable[228] = vec2(201.2, 104.6);
+        gamutCuspTable[229] = vec2(200.3, 104.3);
+        gamutCuspTable[230] = vec2(199.3, 104.0);
+        gamutCuspTable[231] = vec2(198.4, 103.8);
+        gamutCuspTable[232] = vec2(197.5, 103.6);
+        gamutCuspTable[233] = vec2(196.6, 103.4);
+        gamutCuspTable[234] = vec2(195.7, 103.2);
+        gamutCuspTable[235] = vec2(194.8, 103.0);
+        gamutCuspTable[236] = vec2(193.9, 102.9);
+        gamutCuspTable[237] = vec2(193.0, 102.8);
+        gamutCuspTable[238] = vec2(192.1, 102.7);
+        gamutCuspTable[239] = vec2(191.2, 102.7);
+        gamutCuspTable[240] = vec2(190.4, 102.7);
+        gamutCuspTable[241] = vec2(189.5, 102.7);
+        gamutCuspTable[242] = vec2(188.6, 102.7);
+        gamutCuspTable[243] = vec2(187.7, 102.8);
+        gamutCuspTable[244] = vec2(186.9, 102.9);
+        gamutCuspTable[245] = vec2(186.0, 103.0);
+        gamutCuspTable[246] = vec2(185.2, 103.1);
+        gamutCuspTable[247] = vec2(184.3, 103.3);
+        gamutCuspTable[248] = vec2(183.4, 103.5);
+        gamutCuspTable[249] = vec2(182.6, 103.7);
+        gamutCuspTable[250] = vec2(181.7, 103.9);
+        gamutCuspTable[251] = vec2(180.9, 104.2);
+        gamutCuspTable[252] = vec2(180.0, 104.5);
+        gamutCuspTable[253] = vec2(179.1, 104.8);
+        gamutCuspTable[254] = vec2(178.3, 105.2);
+        gamutCuspTable[255] = vec2(177.4, 105.6);
+        gamutCuspTable[256] = vec2(176.6, 106.0);
+        gamutCuspTable[257] = vec2(175.7, 106.4);
+        gamutCuspTable[258] = vec2(174.8, 106.9);
+        gamutCuspTable[259] = vec2(173.9, 107.4);
+        gamutCuspTable[260] = vec2(173.1, 107.9);
+        gamutCuspTable[261] = vec2(172.2, 108.5);
+        gamutCuspTable[262] = vec2(171.3, 109.1);
+        gamutCuspTable[263] = vec2(170.4, 109.7);
+        gamutCuspTable[264] = vec2(169.5, 110.4);
+        gamutCuspTable[265] = vec2(168.6, 111.1);
+        gamutCuspTable[266] = vec2(167.7, 111.8);
+        gamutCuspTable[267] = vec2(166.8, 112.6);
+        gamutCuspTable[268] = vec2(165.9, 113.4);
+        gamutCuspTable[269] = vec2(165.0, 114.2);
+        gamutCuspTable[270] = vec2(164.0, 115.1);
+        gamutCuspTable[271] = vec2(163.1, 116.1);
+        gamutCuspTable[272] = vec2(162.1, 117.0);
+        gamutCuspTable[273] = vec2(161.2, 118.0);
+        gamutCuspTable[274] = vec2(160.2, 119.1);
+        gamutCuspTable[275] = vec2(159.2, 120.2);
+        gamutCuspTable[276] = vec2(158.2, 121.3);
+        gamutCuspTable[277] = vec2(157.2, 122.5);
+        gamutCuspTable[278] = vec2(156.2, 123.8);
+        gamutCuspTable[279] = vec2(155.2, 125.1);
+        gamutCuspTable[280] = vec2(154.2, 126.5);
+        gamutCuspTable[281] = vec2(153.1, 127.9);
+        gamutCuspTable[282] = vec2(152.1, 129.4);
+        gamutCuspTable[283] = vec2(151.0, 130.9);
+        gamutCuspTable[284] = vec2(149.9, 132.5);
+        gamutCuspTable[285] = vec2(149.9, 133.2);
+        gamutCuspTable[286] = vec2(150.5, 133.4);
+        gamutCuspTable[287] = vec2(151.1, 133.6);
+        gamutCuspTable[288] = vec2(151.8, 133.9);
+        gamutCuspTable[289] = vec2(152.4, 134.3);
+        gamutCuspTable[290] = vec2(153.0, 134.6);
+        gamutCuspTable[291] = vec2(153.6, 135.0);
+        gamutCuspTable[292] = vec2(154.3, 135.5);
+        gamutCuspTable[293] = vec2(154.9, 135.9);
+        gamutCuspTable[294] = vec2(155.6, 136.5);
+        gamutCuspTable[295] = vec2(156.3, 137.1);
+        gamutCuspTable[296] = vec2(156.9, 137.7);
+        gamutCuspTable[297] = vec2(157.6, 138.3);
+        gamutCuspTable[298] = vec2(158.3, 139.1);
+        gamutCuspTable[299] = vec2(159.0, 139.8);
+        gamutCuspTable[300] = vec2(159.7, 140.6);
+        gamutCuspTable[301] = vec2(160.4, 141.4);
+        gamutCuspTable[302] = vec2(161.2, 142.3);
+        gamutCuspTable[303] = vec2(161.9, 143.3);
+        gamutCuspTable[304] = vec2(162.7, 144.3);
+        gamutCuspTable[305] = vec2(163.5, 145.3);
+        gamutCuspTable[306] = vec2(164.3, 146.4);
+        gamutCuspTable[307] = vec2(165.1, 147.6);
+        gamutCuspTable[308] = vec2(165.9, 148.8);
+        gamutCuspTable[309] = vec2(166.8, 150.1);
+        gamutCuspTable[310] = vec2(167.6, 151.4);
+        gamutCuspTable[311] = vec2(168.5, 152.8);
+        gamutCuspTable[312] = vec2(169.4, 154.3);
+        gamutCuspTable[313] = vec2(170.4, 155.8);
+        gamutCuspTable[314] = vec2(171.3, 157.5);
+        gamutCuspTable[315] = vec2(172.3, 159.2);
+        gamutCuspTable[316] = vec2(173.3, 160.9);
+        gamutCuspTable[317] = vec2(174.3, 162.8);
+        gamutCuspTable[318] = vec2(175.4, 164.7);
+        gamutCuspTable[319] = vec2(176.5, 166.7);
+        gamutCuspTable[320] = vec2(177.6, 168.8);
+        gamutCuspTable[321] = vec2(178.8, 171.0);
+        gamutCuspTable[322] = vec2(180.0, 173.3);
+        gamutCuspTable[323] = vec2(181.3, 175.7);
+        gamutCuspTable[324] = vec2(182.5, 178.2);
+        gamutCuspTable[325] = vec2(183.9, 180.8);
+        gamutCuspTable[326] = vec2(185.3, 183.5);
+        gamutCuspTable[327] = vec2(186.7, 186.4);
+        gamutCuspTable[328] = vec2(188.2, 189.4);
+        gamutCuspTable[329] = vec2(189.7, 192.4);
+        gamutCuspTable[330] = vec2(191.4, 195.7);
+        gamutCuspTable[331] = vec2(193.0, 199.1);
+        gamutCuspTable[332] = vec2(194.8, 202.6);
+        gamutCuspTable[333] = vec2(196.6, 206.3);
+        gamutCuspTable[334] = vec2(198.5, 210.2);
+        gamutCuspTable[335] = vec2(200.5, 214.2);
+        gamutCuspTable[336] = vec2(202.6, 218.4);
+        gamutCuspTable[337] = vec2(204.8, 222.8);
+        gamutCuspTable[338] = vec2(207.1, 227.4);
+        gamutCuspTable[339] = vec2(205.2, 228.3);
+        gamutCuspTable[340] = vec2(203.3, 229.1);
+        gamutCuspTable[341] = vec2(201.3, 230.0);
+        gamutCuspTable[342] = vec2(199.5, 231.0);
+        gamutCuspTable[343] = vec2(197.7, 231.9);
+        gamutCuspTable[344] = vec2(195.9, 233.0);
+        gamutCuspTable[345] = vec2(194.2, 233.9);
+        gamutCuspTable[346] = vec2(192.5, 235.0);
+        gamutCuspTable[347] = vec2(190.8, 236.1);
+        gamutCuspTable[348] = vec2(189.2, 237.2);
+        gamutCuspTable[349] = vec2(187.7, 238.3);
+        gamutCuspTable[350] = vec2(186.1, 239.5);
+        gamutCuspTable[351] = vec2(184.7, 240.6);
+        gamutCuspTable[352] = vec2(183.2, 241.8);
+        gamutCuspTable[353] = vec2(181.8, 243.0);
+        gamutCuspTable[354] = vec2(180.5, 244.3);
+        gamutCuspTable[355] = vec2(179.2, 245.5);
+        gamutCuspTable[356] = vec2(177.9, 246.8);
+        gamutCuspTable[357] = vec2(176.7, 248.1);
+        gamutCuspTable[358] = vec2(175.5, 249.3);
+        gamutCuspTable[359] = vec2(174.9, 248.6);
+    }
+
+    vec2 project_from = vec2(JMh.x, JMh.y);
+    vec2 JMcusp;
+    float h = JMh.z;
+    int lo = int(floor(mod(h, 360.0)));
+    int hi = int(ceil(mod(h, 360.0)));
+    if (hi == 360)
+    {
+        hi = 0;
+    }
+    float t = mod(h, 1.0);
+
+    JMcusp.x = lerp(gamutCuspTable[lo].x, gamutCuspTable[hi].x, t);
+    JMcusp.y = lerp(gamutCuspTable[lo].y, gamutCuspTable[hi].y, t);
+
+    if (project_from.y > float_epsilon)
+    {
+        // Calculate where the out of gamut color is projected to
+        float focusJ = lerp(JMcusp.x, midJ, cuspMidBlend);
+
+        // https://www.desmos.com/calculator/9u0wiiz9ys
+        float Mratio = project_from.y / (focusDistance * JMcusp.y);
+        float a = max(0.001, Mratio / focusJ);
+        float b0 = 1.0 - Mratio;
+        float b1 = -(1.0 + Mratio + (a * limitJmax));
+        float b = project_from.x < focusJ ? b0 : b1;
+        float c0 = -project_from.x;
+        float c1 = project_from.x + limitJmax * Mratio;
+        float c = project_from.x < focusJ ? c0 : c1;
+
+        float J0 = sqrt(b * b - 4.0 * a * c);
+        float J1 = (-b - J0) / (2.0 * a);
+              J0 = (-b + J0) / (2.0 * a);
+        float projectJ = project_from.x < focusJ ? J0 : J1;
+
+        // Find gamut intersection
+        vec2 project_to = vec2(projectJ, 0.0);
+        vec2 JMboundary = find_gamut_intersection(JMcusp, project_from, project_to, smoothCusps);
+
+        // Compress the out of gamut color along the projection line
+        float v = project_from.y / JMboundary.y;
+        v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, false);
+        vec2 JMcompressed = project_to + v * (JMboundary - project_to);
+
+        JMh.x = JMcompressed.x;
+        JMh.y = JMcompressed.y;
+    }
+
+    XYZ = Hellwig2022_JMh_to_XYZ(JMh , d65White) / referenceLuminance;
+    outval = XYZ * XYZ_to_AP0_ACES_matrix;
+    
+    outval = outval * INV_FL_NORMALIZE;
+
+    return vec4(outval, val.a);
+}
+@@
+
+GenericInverse = upto("@@");
+
+
+// --------------------------------------------------
+
+// Inverse Test Rendering Transform
+
+const float mmScaleFactor = 100.0; 
+const float daniele_n_r = 100.0;    // Normalized white in nits (what 1.0 should be)
+const float daniele_g = 1.15;      // surround / contrast
+const float daniele_c = 0.18;      // scene-referred grey
+const float daniele_c_d = 10.013;    // display-referred grey (in nits)
+const float daniele_w_g = 0.14;    // grey change between different peak luminance
+const float daniele_t_1 = 0.04;     // shadow toe, flare/glare compensation - how ever you want to call it
+const float daniele_r_hit_min = 128.0;  // Scene-referred value "hitting the roof" at 100 nits
+const float daniele_r_hit_max = 896.0;  // Scene-referred value "hitting the roof" at 10,000 nits
+
+float daniele_evo_rev(float Y)
+{
+    const float daniele_r_hit = daniele_r_hit_min + (daniele_r_hit_max - daniele_r_hit_min) * (log(daniele_n / daniele_n_r) / log(10000.0 / 100.0));
+    const float daniele_m_0 = daniele_n / daniele_n_r;
+    const float daniele_m_1 = 0.5 * (daniele_m_0 + sqrt(daniele_m_0 * (daniele_m_0 + 4.0 * daniele_t_1)));
+    const float daniele_u = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + 1.0), daniele_g);
+    const float daniele_m = daniele_m_1 / daniele_u;
+    const float daniele_w_i = log(daniele_n / 100.0) / log(2.0);
+    const float daniele_c_t = daniele_c_d * (1.0 + daniele_w_i * daniele_w_g) / daniele_n_r;
+    const float daniele_g_ip = 0.5 * (daniele_c_t + sqrt(daniele_c_t * (daniele_c_t + 4.0 * daniele_t_1)));
+    const float daniele_g_ipp2 = -daniele_m_1 * pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) / (pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) - 1.0);
+    const float daniele_w_2 = daniele_c / daniele_g_ipp2;
+    const float daniele_s_2 = daniele_w_2 * daniele_m_1;
+    const float daniele_u_2 = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + daniele_w_2), daniele_g);
+    const float daniele_m_2 = daniele_m_1 / daniele_u_2;
+
+    Y = max(0.0, min(daniele_n / (daniele_u_2 * daniele_n_r), Y));
+    float h = (Y + sqrt(Y * (4.0 * daniele_t_1 + Y))) / 2.0;
+    float f = daniele_s_2 / (pow((daniele_m_2 / h), (1.0 / daniele_g)) - 1.0);
+
+    return f;
+}
+  
+vec4 fn(vec4 val){
+    vec3 outval = val.rgb;
+
+    outval.x = daniele_evo_rev(outval.x);
+    outval.y = daniele_evo_rev(outval.y);
+    outval.z = daniele_evo_rev(outval.z);
+
+    return vec4(outval, val.a);
+}
+@@
+
+Forward = "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + GenericForward;
+Inverse = "const float daniele_n = 100.0;\n" + GenericInverse;
+MasteringSpec = [struct space = "Video_Full", whitepoint = "None"];
+
+ViewingConditions = struct
+(
+    "Video-100", struct
+    (
+    "Name", "Video 100 nits",
+    "MasteringSpec", [struct space = "Video_Full", whitepoint = "None"],
+    "Type", "function",
+    "InSpace", "ACES_lin",
+    "OutSpace", "ACES_lin",
+    "Forward", "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + GenericForward,
+    "Inverse", "const float daniele_n = 100.0;\n" + GenericInverse
+    ),
+    "VideoWide-1000", struct
+    (
+    "Name", "VideoWide 1000 nits",
+    "MasteringSpec", [struct space = "DolbyPQ_P3D65_1000nits", whitepoint = "None"],
+    "Type", "function",
+    "InSpace", "ACES_lin",
+    "OutSpace", "ACES_lin",
+    "Forward", "const float daniele_n = 1000.0;\nconst float limitJmax = 283.25;\nconst int limitGamut = 1;\n" + GenericForward,
+    "Inverse", "const float daniele_n = 1000.0;\n" + GenericInverse
+    ),
+);
+
+GenericForward = NULL;
+GenericInverse = NULL;
