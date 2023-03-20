@@ -3,11 +3,7 @@ Type = "function";
 InSpace = "ACES_lin";
 OutSpace = "ACES_lin";
 
-GenericForward = upto("@@");
-
-// --------------------------------------------------
-
-// Test Rendering Transform
+commonFuncs = upto("@@");
 
 const mat3 MATRIX_16 = mat3(
      0.56193142,  0.40797761,  0.03009097,
@@ -491,15 +487,6 @@ float ptanh(float x, float p, float t, float pt)
     return x <= 10.0 ? pow(tanh(pow(x, p) / t), 1.0 / pt) : 1.0;
 }
 
-// convert linear RGB values with the limiting primaries to Hellwig J (lightness), M (colorfulness) and h (hue) correlates
-// __DEVICE__ inline float3 limit_RGB_to_JMh(float3 RGB)
-// {
-//     float3 luminanceRGB = RGB * boundaryRGB * referenceLuminance;
-//     float3 XYZ = vector_dot(RGB_to_XYZ_limit, luminanceRGB);
-//     float3 JMh = XYZ_to_Hellwig2022_JMh(XYZ, d65White);
-//     return JMh;
-// }
-
 // Scaled power(p)
 float spowerp(float x, float l, float p)
 {
@@ -661,6 +648,9 @@ vec2 find_gamut_intersection(vec2 cusp, vec2 from, vec2 to, float smoothing)
 
     return vec2(to.x * (1.0 - t1) + t1 * from.x, t1 * from.y);
 }
+@@
+
+GenericForward1 = upto("@@");
 
 vec4 fn(vec4 val){
     vec3 inval = val.rgb;
@@ -675,6 +665,10 @@ vec4 fn(vec4 val){
     XYZ *= referenceLuminance;
     vec3 JMh = XYZ_to_Hellwig2022_JMh(XYZ, inWhite);
     JMh = forwardTonescale(JMh);
+
+@@
+
+cuspTable = upto("@@");
 
     vec2 gamutCuspTable[360];
     if (limitGamut == 0) // Rec.709 100 nits
@@ -1403,6 +1397,9 @@ vec4 fn(vec4 val){
         gamutCuspTable[358] = vec2(175.5, 249.3);
         gamutCuspTable[359] = vec2(174.9, 248.6);
     }
+@@
+
+GenericForward2 = upto("@@");
 
     vec2 project_from = vec2(JMh.x, JMh.y);
     vec2 JMcusp;
@@ -1462,11 +1459,6 @@ vec4 fn(vec4 val){
 
 GenericInverse = upto("@@");
 
-
-// --------------------------------------------------
-
-// Inverse Test Rendering Transform
-
 const float mmScaleFactor = 100.0; 
 const float daniele_n_r = 100.0;    // Normalized white in nits (what 1.0 should be)
 const float daniele_g = 1.15;      // surround / contrast
@@ -1511,7 +1503,7 @@ vec4 fn(vec4 val){
 }
 @@
 
-Forward = "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + GenericForward;
+Forward = "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2;
 Inverse = "const float daniele_n = 100.0;\n" + GenericInverse;
 MasteringSpec = [struct space = "Video_Full", whitepoint = "None"];
 
@@ -1524,7 +1516,7 @@ ViewingConditions = struct
     "Type", "function",
     "InSpace", "ACES_lin",
     "OutSpace", "ACES_lin",
-    "Forward", "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + GenericForward,
+    "Forward", "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2,
     "Inverse", "const float daniele_n = 100.0;\n" + GenericInverse
     ),
     "VideoWide-1000", struct
@@ -1534,7 +1526,7 @@ ViewingConditions = struct
     "Type", "function",
     "InSpace", "ACES_lin",
     "OutSpace", "ACES_lin",
-    "Forward", "const float daniele_n = 1000.0;\nconst float limitJmax = 283.25;\nconst int limitGamut = 1;\n" + GenericForward,
+    "Forward", "const float daniele_n = 1000.0;\nconst float limitJmax = 283.25;\nconst int limitGamut = 1;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2,
     "Inverse", "const float daniele_n = 1000.0;\n" + GenericInverse
     ),
 );
