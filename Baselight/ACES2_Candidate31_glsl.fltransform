@@ -34,6 +34,11 @@ const mat3 INV_FL_NORMALIZE = mat3(
     1.002304, 0.000000,  0.000008,
     -0.001088, 1.000000, -0.007302,
     0.000000, 0.000000,  0.926328);
+    
+const mat3 FL_NORMALIZE = mat3(
+    0.997701, 0.00000, -0.000009,
+    0.001085, 1.00000,  0.007883,
+    0.000000, 0.00000,  1.079531);
 
 // Matrix for Hellwig inverse
 const mat3 panlrcm = mat3(
@@ -482,6 +487,29 @@ float daniele_evo_fwd(float Y)
     return h;
 }
 
+float daniele_evo_rev(float Y)
+{
+    const float daniele_r_hit = daniele_r_hit_min + (daniele_r_hit_max - daniele_r_hit_min) * (log(daniele_n / daniele_n_r) / log(10000.0 / 100.0));
+    const float daniele_m_0 = daniele_n / daniele_n_r;
+    const float daniele_m_1 = 0.5 * (daniele_m_0 + sqrt(daniele_m_0 * (daniele_m_0 + 4.0 * daniele_t_1)));
+    const float daniele_u = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + 1.0), daniele_g);
+    const float daniele_m = daniele_m_1 / daniele_u;
+    const float daniele_w_i = log(daniele_n / 100.0) / log(2.0);
+    const float daniele_c_t = daniele_c_d * (1.0 + daniele_w_i * daniele_w_g) / daniele_n_r;
+    const float daniele_g_ip = 0.5 * (daniele_c_t + sqrt(daniele_c_t * (daniele_c_t + 4.0 * daniele_t_1)));
+    const float daniele_g_ipp2 = -daniele_m_1 * pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) / (pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) - 1.0);
+    const float daniele_w_2 = daniele_c / daniele_g_ipp2;
+    const float daniele_s_2 = daniele_w_2 * daniele_m_1;
+    const float daniele_u_2 = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + daniele_w_2), daniele_g);
+    const float daniele_m_2 = daniele_m_1 / daniele_u_2;
+
+    Y = max(0.0, min(daniele_n / (daniele_u_2 * daniele_n_r), Y));
+    float h = (Y + sqrt(Y * (4.0 * daniele_t_1 + Y))) / 2.0;
+    float f = daniele_s_2 / (pow((daniele_m_2 / h), (1.0 / daniele_g)) - 1.0);
+
+    return f;
+}
+
 float ptanh(float x, float p, float t, float pt)
 {
     return x <= 10.0 ? pow(tanh(pow(x, p) / t), 1.0 / pt) : 1.0;
@@ -618,6 +646,26 @@ vec3 forwardTonescale( vec3 inputJMh)
     return outputJMh;
 }
 
+vec3 inverseTonescale( vec3 JMh)
+  {
+    vec3 tonemappedJMh = JMh;
+
+    vec3 untonemappedColourJMh = tonemappedJMh;
+    
+    vec3 monoTonemappedJMh = vec3(tonemappedJMh.x, 0.0, 0.0);
+    vec3 luminanceXYZ = Hellwig2022_JMh_to_XYZ( monoTonemappedJMh, d65White);
+    float luminance = luminanceXYZ.y;
+
+    float linear = daniele_evo_rev(luminance / mmScaleFactor);
+
+    vec3 untonemappedMonoJMh = XYZ_to_Hellwig2022_JMh(d65White * linear, d65White);
+    untonemappedColourJMh = vec3(untonemappedMonoJMh.x,tonemappedJMh.y,tonemappedJMh.z); 
+
+    untonemappedColourJMh.y = chromaCompression(tonemappedJMh, linear, true);
+
+    return  untonemappedColourJMh;
+  }
+
 // Smooth minimum of a and b
 float smin(float a, float b, float s)
 {
@@ -667,6 +715,23 @@ vec4 fn(vec4 val){
     JMh = forwardTonescale(JMh);
 
 @@
+
+GenericInverse1 = upto("@@");
+
+vec4 fn(vec4 val){
+    vec3 inval = val.rgb;
+    inval.x = clamp(inval.x, 0.0, 1.0);
+    inval.y = clamp(inval.y, 0.0, 1.0);
+    inval.z = clamp(inval.z, 0.0, 1.0);
+    vec3 outval = inval;
+
+    inval = inval * FL_NORMALIZE;
+    vec3 XYZ = inval * AP0_ACES_to_XYZ_matrix;
+    XYZ *= referenceLuminance;
+    vec3 JMh = XYZ_to_Hellwig2022_JMh(XYZ, d65White);
+
+@@
+
 
 cuspTable = upto("@@");
 
@@ -1457,54 +1522,75 @@ GenericForward2 = upto("@@");
 }
 @@
 
-GenericInverse = upto("@@");
+GenericInverse2 = upto("@@");
 
-const float mmScaleFactor = 100.0; 
-const float daniele_n_r = 100.0;    // Normalized white in nits (what 1.0 should be)
-const float daniele_g = 1.15;      // surround / contrast
-const float daniele_c = 0.18;      // scene-referred grey
-const float daniele_c_d = 10.013;    // display-referred grey (in nits)
-const float daniele_w_g = 0.14;    // grey change between different peak luminance
-const float daniele_t_1 = 0.04;     // shadow toe, flare/glare compensation - how ever you want to call it
-const float daniele_r_hit_min = 128.0;  // Scene-referred value "hitting the roof" at 100 nits
-const float daniele_r_hit_max = 896.0;  // Scene-referred value "hitting the roof" at 10,000 nits
+    vec2 project_from = vec2(JMh.x, JMh.y);
+    vec2 JMcusp;
+    float h = JMh.z;
+    int lo = int(floor(mod(h, 360.0)));
+    int hi = int(ceil(mod(h, 360.0)));
+    if (hi == 360)
+    {
+        hi = 0;
+    }
+    float t = mod(h, 1.0);
 
-float daniele_evo_rev(float Y)
-{
-    const float daniele_r_hit = daniele_r_hit_min + (daniele_r_hit_max - daniele_r_hit_min) * (log(daniele_n / daniele_n_r) / log(10000.0 / 100.0));
-    const float daniele_m_0 = daniele_n / daniele_n_r;
-    const float daniele_m_1 = 0.5 * (daniele_m_0 + sqrt(daniele_m_0 * (daniele_m_0 + 4.0 * daniele_t_1)));
-    const float daniele_u = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + 1.0), daniele_g);
-    const float daniele_m = daniele_m_1 / daniele_u;
-    const float daniele_w_i = log(daniele_n / 100.0) / log(2.0);
-    const float daniele_c_t = daniele_c_d * (1.0 + daniele_w_i * daniele_w_g) / daniele_n_r;
-    const float daniele_g_ip = 0.5 * (daniele_c_t + sqrt(daniele_c_t * (daniele_c_t + 4.0 * daniele_t_1)));
-    const float daniele_g_ipp2 = -daniele_m_1 * pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) / (pow(daniele_g_ip / daniele_m, 1.0 / daniele_g) - 1.0);
-    const float daniele_w_2 = daniele_c / daniele_g_ipp2;
-    const float daniele_s_2 = daniele_w_2 * daniele_m_1;
-    const float daniele_u_2 = pow((daniele_r_hit / daniele_m_1) / ((daniele_r_hit / daniele_m_1) + daniele_w_2), daniele_g);
-    const float daniele_m_2 = daniele_m_1 / daniele_u_2;
+    JMcusp.x = lerp(gamutCuspTable[lo].x, gamutCuspTable[hi].x, t);
+    JMcusp.y = lerp(gamutCuspTable[lo].y, gamutCuspTable[hi].y, t);
 
-    Y = max(0.0, min(daniele_n / (daniele_u_2 * daniele_n_r), Y));
-    float h = (Y + sqrt(Y * (4.0 * daniele_t_1 + Y))) / 2.0;
-    float f = daniele_s_2 / (pow((daniele_m_2 / h), (1.0 / daniele_g)) - 1.0);
+    if (project_from.y > float_epsilon)
+    {
+        // Calculate where the out of gamut color is projected to
+        float focusJ = lerp(JMcusp.x, midJ, cuspMidBlend);
 
-    return f;
-}
-  
-vec4 fn(vec4 val){
-    vec3 outval = val.rgb;
+        // https://www.desmos.com/calculator/9u0wiiz9ys
+        float Mratio = project_from.y / (focusDistance * JMcusp.y);
+        float a = max(0.001, Mratio / focusJ);
+        float b0 = 1.0 - Mratio;
+        float b1 = -(1.0 + Mratio + (a * limitJmax));
+        float b = project_from.x < focusJ ? b0 : b1;
+        float c0 = -project_from.x;
+        float c1 = project_from.x + limitJmax * Mratio;
+        float c = project_from.x < focusJ ? c0 : c1;
 
-    outval.x = daniele_evo_rev(outval.x);
-    outval.y = daniele_evo_rev(outval.y);
-    outval.z = daniele_evo_rev(outval.z);
+        float J0 = sqrt(b * b - 4.0 * a * c);
+        float J1 = (-b - J0) / (2.0 * a);
+              J0 = (-b + J0) / (2.0 * a);
+        float projectJ = project_from.x < focusJ ? J0 : J1;
+
+        // Find gamut intersection
+        vec2 project_to = vec2(projectJ, 0.0);
+        vec2 JMboundary = find_gamut_intersection(JMcusp, project_from, project_to, smoothCusps);
+
+        // Compress the out of gamut color along the projection line
+        float v = project_from.y / JMboundary.y;
+        v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, true);
+        vec2 JMcompressed = project_to + v * (JMboundary - project_to);
+
+        JMh.x = JMcompressed.x;
+        JMh.y = JMcompressed.y;
+    }
+
+    JMh = inverseTonescale(JMh);
+
+    vec3 inWhite = vec3(100.0, 100.0, 100.0) * AP0_ACES_to_XYZ_matrix;
+    XYZ = Hellwig2022_JMh_to_XYZ(JMh , inWhite) / referenceLuminance;
+    outval = XYZ * XYZ_to_AP0_ACES_matrix;
+
+    // trap black pixel NaNs
+// 	if (isnan(outval.x) || isnan(outval.y) || isnan(outval.z))
+    // Baselight GLSL seems to have no isnan function, so check explicitly for black input
+	if (val.x < float_epsilon && val.y < float_epsilon && val.z < float_epsilon)
+	{
+		outval = vec3(0.0, 0.0, 0.0);
+	}
 
     return vec4(outval, val.a);
 }
 @@
 
 Forward = "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2;
-Inverse = "const float daniele_n = 100.0;\n" + GenericInverse;
+Inverse = "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericInverse1 + cuspTable + GenericInverse2;
 MasteringSpec = [struct space = "Video_Full", whitepoint = "None"];
 
 ViewingConditions = struct
@@ -1517,7 +1603,7 @@ ViewingConditions = struct
     "InSpace", "ACES_lin",
     "OutSpace", "ACES_lin",
     "Forward", "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2,
-    "Inverse", "const float daniele_n = 100.0;\n" + GenericInverse
+    "Inverse", "const float daniele_n = 100.0;\nconst float limitJmax = 100.0;\nconst int limitGamut = 0;\n" + commonFuncs + GenericInverse1 + cuspTable + GenericInverse2
     ),
     "VideoWide-1000", struct
     (
@@ -1527,7 +1613,7 @@ ViewingConditions = struct
     "InSpace", "ACES_lin",
     "OutSpace", "ACES_lin",
     "Forward", "const float daniele_n = 1000.0;\nconst float limitJmax = 283.25;\nconst int limitGamut = 1;\n" + commonFuncs + GenericForward1 + cuspTable + GenericForward2,
-    "Inverse", "const float daniele_n = 1000.0;\n" + GenericInverse
+    "Inverse", "const float daniele_n = 1000.0;\nconst float limitJmax = 283.25;\nconst int limitGamut = 1;\n" + commonFuncs + GenericInverse1 + cuspTable + GenericInverse2
     ),
 );
 
