@@ -786,6 +786,38 @@ __DEVICE__ inline float2 find_gamut_intersection(float2 cusp, float2 from, float
     return make_float2(to.x * (1.0f - t1) + t1 * from.x, t1 * from.y);
 }
 
+// Approximation of the gamut intersection to a curved and smoothened triangle
+// along the projection line from intersectJ.
+__DEVICE__ inline float2 find_gamut_intersection_alt(float2 cusp, float projectJ, float focusJ, float smoothing)
+{
+    // Need to be careful because x and y axes on Desmos plot are M and J, which is inverted compared to the components of a JM float2
+    // Here x0 and x1 are M values and y1 is the J value
+    float x0, x1, y1;
+
+    // Scale the cusp outward when smoothing to avoid reducing the gamut.  Reduce
+    // smoothing for high cusps because smin() will bias it too much for the longer line.
+    float s = _fmaxf(lerp(smoothing, smoothing * 0.01f, cusp.x / limitJmax), 0.0001f);
+    cusp.y += 15.0f * s;
+    cusp.x += 5.0f * s;
+
+    //slope of compression vector (line is J = slope * M + projectJ)
+    float distJ =  projectJ < focusJ ? projectJ : (limitJmax - projectJ);
+    float slope = distJ * (projectJ - focusJ) / (2.0f * focusJ * cusp.y);
+
+    // Line below the cusp is curved with gamut_gamma
+    x0 = _powf(1.0f - slope, 1.0f / gamut_gamma - 1.0f) * cusp.x * _powf(projectJ / cusp.x, gamut_gamma) / ((cusp.x / cusp.y) - slope);
+
+    // Line above the cusp
+    x1 = cusp.y * (limitJmax - projectJ) / (slope * cusp.y + limitJmax - cusp.x);
+
+    // Smooth minimum to smooth the cusp
+    x1 = smin(_fabs(x0), _fabs(x1), s);
+
+    y1 = slope * x1 + projectJ;
+
+    return make_float2(y1, x1);
+}
+
 __DEVICE__ inline float3 compressGamut(float3 JMh, int invert)
 {
     float2 project_from = make_float2(JMh.x, JMh.y);
@@ -821,7 +853,47 @@ __DEVICE__ inline float3 compressGamut(float3 JMh, int invert)
     v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, invert);
     float2 JMcompressed = project_to + v * (JMboundary - project_to);
 
-    return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
+//     return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
+    return make_float3(JMboundary.x, JMboundary.y, JMh.z);
+}
+
+__DEVICE__ inline float3 compressGamutAlt(float3 JMh, int invert)
+{
+    float2 project_from = make_float2(JMh.x, JMh.y);
+    float2 JMcusp = cuspFromTable(JMh.z);
+
+    if (project_from.y == 0.0f)
+      return JMh;
+
+    // Calculate where the out of gamut color is projected to
+    float focusJ = lerp(JMcusp.x, midJ, cuspMidBlend);
+
+    // https://www.desmos.com/calculator/9u0wiiz9ys
+    float Mratio = project_from.y / (focusDistance * JMcusp.y);
+    float a = _fmaxf(0.001f, Mratio / focusJ);
+    float b0 = 1.0f - Mratio;
+    float b1 = -(1.0f + Mratio + (a * limitJmax));
+    float b = project_from.x < focusJ ? b0 : b1;
+    float c0 = -project_from.x;
+    float c1 = project_from.x + limitJmax * Mratio;
+    float c = project_from.x < focusJ ? c0 : c1;
+
+    float J0 = _sqrtf(b * b - 4.0f * a * c);
+    float J1 = (-b - J0) / (2.0f * a);
+          J0 = (-b + J0) / (2.0f * a);
+    float projectJ = project_from.x < focusJ ? J0 : J1;
+
+    // Find gamut intersection
+    float2 project_to = make_float2(projectJ, 0.0f);
+    float2 JMboundary = find_gamut_intersection_alt(JMcusp, projectJ, focusJ, smoothCusps);
+
+    // Compress the out of gamut color along the projection line
+    float v = project_from.y / JMboundary.y;
+    v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, invert);
+    float2 JMcompressed = project_to + v * (JMboundary - project_to);
+
+//     return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
+    return make_float3(JMboundary.x, JMboundary.y, JMh.z);
 }
 
   // encode linear values as ST2084 PQ

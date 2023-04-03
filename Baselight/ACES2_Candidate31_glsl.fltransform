@@ -1475,7 +1475,7 @@ GenericForward2 = upto("@@");
     {
         hi = 0;
     }
-    float t = mod(h, 1.0);
+    float t = fract(h);
 
     JMcusp.x = lerp(gamutCuspTable[lo].x, gamutCuspTable[hi].x, t);
     JMcusp.y = lerp(gamutCuspTable[lo].y, gamutCuspTable[hi].y, t);
@@ -1533,7 +1533,7 @@ GenericInverse2 = upto("@@");
     {
         hi = 0;
     }
-    float t = mod(h, 1.0);
+    float t = fract(h);
 
     JMcusp.x = lerp(gamutCuspTable[lo].x, gamutCuspTable[hi].x, t);
     JMcusp.y = lerp(gamutCuspTable[lo].y, gamutCuspTable[hi].y, t);
