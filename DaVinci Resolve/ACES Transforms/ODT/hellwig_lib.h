@@ -853,8 +853,7 @@ __DEVICE__ inline float3 compressGamut(float3 JMh, int invert)
     v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, invert);
     float2 JMcompressed = project_to + v * (JMboundary - project_to);
 
-//     return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
-    return make_float3(JMboundary.x, JMboundary.y, JMh.z);
+    return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
 }
 
 __DEVICE__ inline float3 compressGamutAlt(float3 JMh, int invert)
@@ -890,10 +889,18 @@ __DEVICE__ inline float3 compressGamutAlt(float3 JMh, int invert)
     // Compress the out of gamut color along the projection line
     float v = project_from.y / JMboundary.y;
     v = compressPowerP(v, compressionFuncParams.x, lerp(compressionFuncParams.z, compressionFuncParams.y, projectJ / limitJmax), compressionFuncParams.w, invert);
-    float2 JMcompressed = project_to + v * (JMboundary - project_to);
+    float2 JMcompressed;
+    // Only compress if v is above threshold to remove precision issues with near achromatic values
+    if (v >= compressionFuncParams.x)
+    {
+        JMcompressed = project_to + v * (JMboundary - project_to);
+    }
+    else
+    {
+        JMcompressed = project_from;
+    }
 
-//     return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
-    return make_float3(JMboundary.x, JMboundary.y, JMh.z);
+    return make_float3(JMcompressed.x, JMcompressed.y, JMh.z);
 }
 
   // encode linear values as ST2084 PQ
